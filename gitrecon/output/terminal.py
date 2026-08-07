@@ -13,8 +13,10 @@ from rich.table import Table
 from gitrecon.models.analysis import RepositoryAnalysis
 from gitrecon.models.repository import RepositoryInfo
 from gitrecon.models.security import (
+    FindingSeverity,
     SecurityAnalysis,
     SecurityFileStatus,
+    SecurityFinding,
     WorkflowDetection,
     WorkflowInfo,
 )
@@ -110,6 +112,35 @@ def format_detection(
     return f"[green]Detected[/green] ({count})"
 
 
+def format_severity(
+    severity: FindingSeverity,
+) -> str:
+    """
+    Formate un niveau de sévérité avec une couleur adaptée.
+
+    Args:
+        severity:
+            Niveau de sévérité du finding.
+
+    Returns:
+        Représentation Rich du niveau de sévérité.
+    """
+
+    if severity == FindingSeverity.CRITICAL:
+        return "[bold red]CRITICAL[/bold red]"
+
+    if severity == FindingSeverity.HIGH:
+        return "[red]HIGH[/red]"
+
+    if severity == FindingSeverity.MEDIUM:
+        return "[yellow]MEDIUM[/yellow]"
+
+    if severity == FindingSeverity.LOW:
+        return "[cyan]LOW[/cyan]"
+
+    return "[dim]INFO[/dim]"
+
+
 def display_repository(
     repository: RepositoryInfo,
     analysis: RepositoryAnalysis,
@@ -137,6 +168,7 @@ def display_repository(
     display_languages(analysis)
     display_activity(repository)
     display_security(security)
+    display_workflow_security(security)
     display_warnings(analysis, security)
 
     console.print()
@@ -147,10 +179,6 @@ def display_repository_information(
 ) -> None:
     """
     Affiche les informations générales du dépôt.
-
-    Args:
-        repository:
-            Informations générales du dépôt GitHub.
     """
 
     console.print("\n[bold cyan]Repository[/bold cyan]")
@@ -203,13 +231,6 @@ def display_statistics(
 ) -> None:
     """
     Affiche les principales statistiques du dépôt.
-
-    Args:
-        repository:
-            Informations générales du dépôt.
-
-        analysis:
-            Analyse complémentaire du dépôt.
     """
 
     console.print("\n[bold cyan]Statistics[/bold cyan]")
@@ -254,10 +275,6 @@ def display_languages(
 ) -> None:
     """
     Affiche la répartition des langages détectés.
-
-    Args:
-        analysis:
-            Analyse contenant les langages du dépôt.
     """
 
     console.print("\n[bold cyan]Languages[/bold cyan]")
@@ -282,10 +299,6 @@ def display_activity(
 ) -> None:
     """
     Affiche les principales informations temporelles du dépôt.
-
-    Args:
-        repository:
-            Informations générales du dépôt GitHub.
     """
 
     console.print("\n[bold cyan]Activity[/bold cyan]")
@@ -316,10 +329,6 @@ def display_security(
 ) -> None:
     """
     Affiche les indicateurs de sécurité et de gouvernance.
-
-    Args:
-        security:
-            Analyse de sécurité normalisée du dépôt.
     """
 
     console.print("\n[bold cyan]Security[/bold cyan]")
@@ -375,13 +384,6 @@ def display_security_automation(
 ) -> None:
     """
     Affiche les automatisations liées à la sécurité.
-
-    Certaines détections peuvent provenir directement du contenu YAML,
-    tandis que d'autres reposent sur les métadonnées du workflow.
-
-    Args:
-        security:
-            Analyse de sécurité du dépôt.
     """
 
     if not security.github_actions.present:
@@ -429,17 +431,6 @@ def display_workflow_actions(
 ) -> None:
     """
     Affiche les actions détectées dans un workflow GitHub Actions.
-
-    Cette fonction distingue trois situations :
-
-    1. Le contenu YAML n'est pas disponible.
-    2. Le contenu YAML est disponible mais aucune action externe
-       n'a été détectée.
-    3. Une ou plusieurs actions externes ont été détectées.
-
-    Args:
-        workflow:
-            Workflow à afficher.
     """
 
     if not workflow.content_available:
@@ -458,14 +449,7 @@ def display_github_actions_workflows(
     security: SecurityAnalysis,
 ) -> None:
     """
-    Affiche les workflows GitHub Actions et leur contenu analysable.
-
-    Pour chaque workflow, GitRecon affiche son chemin puis les actions
-    externes détectées dans ses directives ``uses``.
-
-    Args:
-        security:
-            Analyse contenant les workflows normalisés.
+    Affiche les workflows GitHub Actions et leurs actions détectées.
     """
 
     if not security.github_actions.workflows:
@@ -482,22 +466,133 @@ def display_github_actions_workflows(
         display_workflow_actions(workflow)
 
 
+def display_workflow_security(
+    security: SecurityAnalysis,
+) -> None:
+    """
+    Affiche le résumé et les findings de sécurité des workflows.
+    """
+
+    workflow_security = security.workflow_security
+
+    console.print("\n[bold cyan]Workflow Security[/bold cyan]")
+
+    summary_table = create_information_table()
+
+    summary_table.add_row(
+        "Findings",
+        str(workflow_security.total),
+    )
+
+    summary_table.add_row(
+        "Critical",
+        str(workflow_security.critical),
+    )
+
+    summary_table.add_row(
+        "High",
+        str(workflow_security.high),
+    )
+
+    summary_table.add_row(
+        "Medium",
+        str(workflow_security.medium),
+    )
+
+    summary_table.add_row(
+        "Low",
+        str(workflow_security.low),
+    )
+
+    summary_table.add_row(
+        "Info",
+        str(workflow_security.info),
+    )
+
+    console.print(summary_table)
+
+    if not workflow_security.findings:
+        console.print("\n  [green]Aucun finding de sécurité détecté.[/green]")
+        return
+
+    console.print("\n[bold]Security Findings[/bold]")
+
+    severity_order = {
+        FindingSeverity.CRITICAL: 0,
+        FindingSeverity.HIGH: 1,
+        FindingSeverity.MEDIUM: 2,
+        FindingSeverity.LOW: 3,
+        FindingSeverity.INFO: 4,
+    }
+
+    findings = sorted(
+        workflow_security.findings,
+        key=lambda finding: (
+            severity_order[finding.severity],
+            finding.rule_id,
+            finding.workflow or "",
+        ),
+    )
+
+    for finding in findings:
+        display_security_finding(finding)
+
+
+def display_security_finding(
+    finding: SecurityFinding,
+) -> None:
+    """
+    Affiche le détail d'un finding de sécurité.
+    """
+
+    console.print()
+
+    console.print(
+        f"  {format_severity(finding.severity)} [bold]{finding.rule_id}[/bold]"
+    )
+
+    console.print(f"  [bold]{finding.title}[/bold]")
+
+    table = create_information_table()
+
+    if finding.workflow:
+        table.add_row(
+            "Workflow",
+            finding.workflow,
+        )
+
+    if finding.path:
+        table.add_row(
+            "Path",
+            finding.path,
+        )
+
+    if finding.evidence:
+        table.add_row(
+            "Evidence",
+            finding.evidence,
+        )
+
+    table.add_row(
+        "Description",
+        finding.description,
+    )
+
+    if finding.recommendation:
+        table.add_row(
+            "Recommendation",
+            finding.recommendation,
+        )
+
+    console.print(table)
+
+
 def display_warnings(
     analysis: RepositoryAnalysis,
     security: SecurityAnalysis,
 ) -> None:
     """
     Affiche les avertissements générés pendant le scan.
-
-    Les avertissements provenant de l'analyse générale et de l'analyse
-    de sécurité sont regroupés dans une section unique.
-
-    Args:
-        analysis:
-            Analyse générale du dépôt.
-
-        security:
-            Analyse de sécurité du dépôt.
     """
 
     warnings = [

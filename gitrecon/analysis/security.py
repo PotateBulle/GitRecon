@@ -4,30 +4,38 @@ Analyse des informations de sécurité d'un dépôt GitHub.
 Ce module transforme les données brutes collectées via l'API GitHub
 en structures normalisées utilisables par GitRecon.
 
-Depuis la V3.2, le contenu YAML des workflows GitHub Actions peut être
-analysé afin d'identifier les actions réellement référencées dans les
-directives ``uses``.
-
-La V3.2.1 ajoute également une distinction entre les workflows dont
-le contenu YAML est réellement disponible et ceux uniquement connus
-grâce aux métadonnées retournées par GitHub.
+Le contenu YAML des workflows GitHub Actions est analysé afin
+d'identifier les actions utilisées, certaines automatisations
+de sécurité et plusieurs configurations pouvant nécessiter
+une attention particulière.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from typing import Any
 
 import yaml
 
 from gitrecon.models.security import (
+    FindingSeverity,
     GitHubActionsStatus,
     SecurityAnalysis,
     SecurityAutomationAnalysis,
     SecurityFileStatus,
+    SecurityFinding,
     WorkflowDetection,
     WorkflowInfo,
+    WorkflowSecurityAnalysis,
 )
+
+FULL_COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
+
+FIRST_PARTY_ACTION_OWNERS = {
+    "actions",
+    "github",
+}
 
 
 def build_file_status(
@@ -38,10 +46,8 @@ def build_file_status(
 
     Args:
         result:
-            Tuple contenant :
-
-            - un booléen indiquant si le fichier existe ;
-            - son chemin lorsqu'il a été trouvé.
+            Tuple contenant l'état de présence du fichier
+            et son chemin éventuel.
 
     Returns:
         État normalisé du fichier.
@@ -55,43 +61,49 @@ def build_file_status(
     )
 
 
-def extract_uses_from_yaml(
+def load_workflow_yaml(
     content: str,
-) -> list[str]:
+) -> dict[str, Any] | None:
     """
-    Extrait toutes les directives ``uses`` d'un workflow GitHub Actions.
-
-    Le document YAML est parcouru récursivement afin de détecter les
-    références présentes dans les jobs, les steps ou d'autres structures.
+    Charge le contenu YAML d'un workflow GitHub Actions.
 
     Args:
         content:
-            Contenu YAML brut du workflow.
+            Contenu YAML brut.
 
     Returns:
-        Liste dédupliquée des valeurs ``uses`` rencontrées.
-
-    Notes:
-        Une erreur de parsing YAML n'interrompt pas le scan. Dans ce cas,
-        une liste vide est retournée.
+        Document YAML sous forme de dictionnaire ou ``None``
+        lorsque le contenu ne peut pas être interprété.
     """
 
     try:
         document = yaml.safe_load(content)
-
     except yaml.YAMLError:
-        return []
+        return None
 
     if not isinstance(document, dict):
-        return []
+        return None
+
+    return document
+
+
+def extract_uses_from_document(
+    document: dict[str, Any],
+) -> list[str]:
+    """
+    Extrait toutes les directives ``uses`` d'un document YAML.
+
+    Args:
+        document:
+            Workflow YAML déjà désérialisé.
+
+    Returns:
+        Liste dédupliquée des références ``uses``.
+    """
 
     uses_values: list[str] = []
 
     def walk(value: Any) -> None:
-        """
-        Parcourt récursivement une structure issue du document YAML.
-        """
-
         if isinstance(value, dict):
             for key, item in value.items():
                 if key == "uses" and isinstance(item, str):
@@ -111,11 +123,33 @@ def extract_uses_from_yaml(
     return uses_values
 
 
-def normalize_action_name(value: str) -> str:
+def extract_uses_from_yaml(
+    content: str,
+) -> list[str]:
     """
-    Normalise une directive ``uses`` GitHub Actions.
+    Extrait les directives ``uses`` depuis un workflow YAML.
 
-    La version ou la référence Git située après ``@`` est supprimée.
+    Args:
+        content:
+            Contenu YAML brut.
+
+    Returns:
+        Liste dédupliquée des références ``uses``.
+    """
+
+    document = load_workflow_yaml(content)
+
+    if document is None:
+        return []
+
+    return extract_uses_from_document(document)
+
+
+def normalize_action_name(
+    value: str,
+) -> str:
+    """
+    Supprime la référence située après ``@``.
 
     Exemple :
 
@@ -127,10 +161,10 @@ def normalize_action_name(value: str) -> str:
 
     Args:
         value:
-            Valeur brute d'une directive ``uses``.
+            Référence ``uses`` brute.
 
     Returns:
-        Nom normalisé de l'action ou du workflow réutilisable.
+        Nom normalisé.
     """
 
     return value.split("@", maxsplit=1)[0].strip()
@@ -140,24 +174,26 @@ def extract_actions(
     uses: list[str],
 ) -> list[str]:
     """
-    Extrait les actions externes utilisées par un workflow.
+    Extrait les actions GitHub externes.
 
-    Les actions locales commençant par ``./`` sont conservées dans
-    ``WorkflowInfo.uses`` mais ne sont pas considérées comme des
-    actions externes.
+    Les actions locales et les images Docker ne sont pas considérées
+    comme des actions GitHub externes.
 
     Args:
         uses:
-            Valeurs ``uses`` extraites du workflow.
+            Références ``uses`` extraites du workflow.
 
     Returns:
-        Liste dédupliquée des actions externes normalisées.
+        Liste dédupliquée des actions externes.
     """
 
     actions: list[str] = []
 
     for value in uses:
-        if value.startswith("./"):
+        if is_local_action(value):
+            continue
+
+        if is_docker_action(value):
             continue
 
         action = normalize_action_name(value)
@@ -168,6 +204,502 @@ def extract_actions(
     return actions
 
 
+def split_action_reference(
+    value: str,
+) -> tuple[str, str | None]:
+    """
+    Sépare une référence GitHub Actions de sa version.
+
+    Exemple :
+
+        actions/checkout@v4
+
+    devient :
+
+        ("actions/checkout", "v4")
+
+    Args:
+        value:
+            Référence brute.
+
+    Returns:
+        Nom de la ressource et référence éventuelle.
+    """
+
+    if "@" not in value:
+        return value.strip(), None
+
+    resource, reference = value.rsplit("@", maxsplit=1)
+
+    return resource.strip(), reference.strip()
+
+
+def is_local_action(
+    value: str,
+) -> bool:
+    """
+    Indique si une référence correspond à une action locale.
+    """
+
+    return value.startswith("./")
+
+
+def is_docker_action(
+    value: str,
+) -> bool:
+    """
+    Indique si une référence correspond directement à une image Docker.
+    """
+
+    return value.startswith("docker://")
+
+
+def is_full_commit_sha(
+    reference: str,
+) -> bool:
+    """
+    Vérifie si une référence correspond à un SHA Git complet.
+    """
+
+    return bool(FULL_COMMIT_SHA_PATTERN.fullmatch(reference))
+
+
+def get_action_owner(
+    resource: str,
+) -> str | None:
+    """
+    Extrait le propriétaire d'une action ou d'un workflow réutilisable.
+
+    Args:
+        resource:
+            Partie située avant ``@``.
+
+    Returns:
+        Propriétaire de la ressource ou ``None``.
+    """
+
+    parts = resource.split("/")
+
+    if len(parts) < 2:
+        return None
+
+    return parts[0].lower()
+
+
+def build_mutable_reference_findings(
+    workflow_name: str,
+    workflow_path: str | None,
+    uses: list[str],
+) -> list[SecurityFinding]:
+    """
+    Recherche les références basées sur main ou master.
+
+    Args:
+        workflow_name:
+            Nom du workflow.
+
+        workflow_path:
+            Chemin du workflow.
+
+        uses:
+            Références ``uses`` détectées.
+
+    Returns:
+        Findings générés.
+    """
+
+    findings: list[SecurityFinding] = []
+
+    for value in uses:
+        if is_local_action(value):
+            continue
+
+        if is_docker_action(value):
+            continue
+
+        _, reference = split_action_reference(value)
+
+        if reference is None:
+            continue
+
+        if reference.lower() not in {
+            "main",
+            "master",
+        }:
+            continue
+
+        findings.append(
+            SecurityFinding(
+                rule_id="GH-ACTIONS-001",
+                title="Référence Git mutable utilisée",
+                description=(
+                    "Le workflow utilise une action ou un workflow "
+                    "réutilisable référencé directement sur une branche "
+                    "mutable."
+                ),
+                severity=FindingSeverity.HIGH,
+                workflow=workflow_name,
+                path=workflow_path,
+                evidence=value,
+                recommendation=(
+                    "Épingler la dépendance sur un SHA de commit complet et vérifié."
+                ),
+            )
+        )
+
+    return findings
+
+
+def build_unpinned_action_findings(
+    workflow_name: str,
+    workflow_path: str | None,
+    uses: list[str],
+) -> list[SecurityFinding]:
+    """
+    Recherche les actions qui ne sont pas épinglées sur un SHA complet.
+
+    Les références utilisant un tag ou une branche restent mutables
+    contrairement à un SHA de commit complet.
+
+    Args:
+        workflow_name:
+            Nom du workflow.
+
+        workflow_path:
+            Chemin du workflow.
+
+        uses:
+            Références ``uses`` détectées.
+
+    Returns:
+        Findings générés.
+    """
+
+    findings: list[SecurityFinding] = []
+
+    for value in uses:
+        if is_local_action(value):
+            continue
+
+        if is_docker_action(value):
+            continue
+
+        _, reference = split_action_reference(value)
+
+        if reference is None:
+            continue
+
+        # Branche mutable
+        if reference.lower() in {
+            "main",
+            "master",
+        }:
+            continue
+
+        if is_full_commit_sha(reference):
+            continue
+
+        findings.append(
+            SecurityFinding(
+                rule_id="GH-ACTIONS-002",
+                title="Action non épinglée sur un SHA",
+                description=(
+                    "La dépendance GitHub Actions utilise une référence "
+                    "qui peut évoluer dans le temps."
+                ),
+                severity=FindingSeverity.MEDIUM,
+                workflow=workflow_name,
+                path=workflow_path,
+                evidence=value,
+                recommendation=(
+                    "Utiliser le SHA complet d'un commit de confiance "
+                    "pour rendre la référence immuable."
+                ),
+            )
+        )
+
+    return findings
+
+
+def build_third_party_action_findings(
+    workflow_name: str,
+    workflow_path: str | None,
+    uses: list[str],
+) -> list[SecurityFinding]:
+    """
+    Identifie les actions provenant d'un propriétaire tiers.
+
+    Une action tierce n'est pas considérée comme une faiblesse de sécurité
+    par défaut. Le finding est informatif et permet d'identifier les
+    dépendances externes faisant partie de la chaîne de confiance.
+
+    Args:
+        workflow_name:
+            Nom du workflow.
+
+        workflow_path:
+            Chemin du workflow.
+
+        uses:
+            Références ``uses`` détectées.
+
+    Returns:
+        Findings informatifs générés.
+    """
+
+    findings: list[SecurityFinding] = []
+
+    for value in uses:
+        if is_local_action(value):
+            continue
+
+        if is_docker_action(value):
+            continue
+
+        resource, _ = split_action_reference(value)
+
+        owner = get_action_owner(resource)
+
+        if owner is None:
+            continue
+
+        if owner in FIRST_PARTY_ACTION_OWNERS:
+            continue
+
+        findings.append(
+            SecurityFinding(
+                rule_id="GH-ACTIONS-003",
+                title="Dépendance GitHub Actions tierce",
+                description=(
+                    "Le workflow utilise une action ou un workflow "
+                    "réutilisable maintenu par un propriétaire tiers."
+                ),
+                severity=FindingSeverity.INFO,
+                workflow=workflow_name,
+                path=workflow_path,
+                evidence=value,
+                recommendation=(
+                    "Vérifier la provenance et la maintenance de cette "
+                    "dépendance, et privilégier une référence épinglée "
+                    "sur un SHA de commit complet."
+                ),
+            )
+        )
+
+    return findings
+
+
+def contains_write_all(
+    document: dict[str, Any],
+) -> bool:
+    """
+    Recherche une déclaration ``permissions: write-all``.
+
+    Args:
+        document:
+            Workflow YAML désérialisé.
+
+    Returns:
+        ``True`` si ``write-all`` est détecté.
+    """
+
+    def walk(value: Any) -> bool:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if (
+                    key == "permissions"
+                    and isinstance(item, str)
+                    and item.lower() == "write-all"
+                ):
+                    return True
+
+                if walk(item):
+                    return True
+
+        elif isinstance(value, list):
+            for item in value:
+                if walk(item):
+                    return True
+
+        return False
+
+    return walk(document)
+
+
+def build_write_all_finding(
+    workflow_name: str,
+    workflow_path: str | None,
+    document: dict[str, Any],
+) -> list[SecurityFinding]:
+    """
+    Génère un finding si ``permissions: write-all`` est utilisé.
+    """
+
+    if not contains_write_all(document):
+        return []
+
+    return [
+        SecurityFinding(
+            rule_id="GH-ACTIONS-004",
+            title="Permissions globales en écriture",
+            description=(
+                "Le workflow utilise permissions: write-all, ce qui "
+                "accorde des capacités d'écriture étendues au token "
+                "GitHub Actions."
+            ),
+            severity=FindingSeverity.HIGH,
+            workflow=workflow_name,
+            path=workflow_path,
+            evidence="permissions: write-all",
+            recommendation=(
+                "Définir explicitement uniquement les permissions "
+                "nécessaires au workflow ou au job concerné."
+            ),
+        )
+    ]
+
+
+def uses_pull_request_target(
+    document: dict[str, Any],
+) -> bool:
+    """
+    Vérifie si le workflow utilise l'événement pull_request_target.
+
+    PyYAML peut interpréter la clé YAML ``on`` comme un booléen dans
+    certains cas. Cette représentation est également prise en charge.
+
+    Args:
+        document:
+            Workflow YAML désérialisé.
+
+    Returns:
+        ``True`` si l'événement est configuré.
+    """
+
+    trigger = document.get("on")
+
+    if trigger is None:
+        trigger = document.get(True)
+
+    if isinstance(trigger, str):
+        return trigger == "pull_request_target"
+
+    if isinstance(trigger, list):
+        return "pull_request_target" in trigger
+
+    if isinstance(trigger, dict):
+        return "pull_request_target" in trigger
+
+    return False
+
+
+def build_pull_request_target_finding(
+    workflow_name: str,
+    workflow_path: str | None,
+    document: dict[str, Any],
+) -> list[SecurityFinding]:
+    """
+    Génère un finding lorsque pull_request_target est utilisé.
+
+    L'événement n'est pas intrinsèquement vulnérable. Il est signalé
+    car son contexte nécessite une attention particulière.
+    """
+
+    if not uses_pull_request_target(document):
+        return []
+
+    return [
+        SecurityFinding(
+            rule_id="GH-ACTIONS-005",
+            title="Utilisation de pull_request_target",
+            description=(
+                "Le workflow utilise l'événement pull_request_target. "
+                "Cet événement s'exécute dans le contexte du dépôt cible "
+                "et peut disposer de permissions ou de secrets sensibles."
+            ),
+            severity=FindingSeverity.MEDIUM,
+            workflow=workflow_name,
+            path=workflow_path,
+            evidence="pull_request_target",
+            recommendation=(
+                "Éviter d'exécuter directement du code non fiable "
+                "provenant de la pull request dans ce contexte."
+            ),
+        )
+    ]
+
+
+def analyze_workflow_findings(
+    workflow_name: str,
+    workflow_path: str | None,
+    document: dict[str, Any],
+    uses: list[str],
+) -> list[SecurityFinding]:
+    """
+    Exécute les règles de sécurité sur un workflow.
+
+    Args:
+        workflow_name:
+            Nom du workflow.
+
+        workflow_path:
+            Chemin du fichier.
+
+        document:
+            Document YAML désérialisé.
+
+        uses:
+            Références ``uses`` détectées.
+
+    Returns:
+        Ensemble des findings générés.
+    """
+
+    findings: list[SecurityFinding] = []
+
+    findings.extend(
+        build_mutable_reference_findings(
+            workflow_name=workflow_name,
+            workflow_path=workflow_path,
+            uses=uses,
+        )
+    )
+
+    findings.extend(
+        build_unpinned_action_findings(
+            workflow_name=workflow_name,
+            workflow_path=workflow_path,
+            uses=uses,
+        )
+    )
+
+    findings.extend(
+        build_third_party_action_findings(
+            workflow_name=workflow_name,
+            workflow_path=workflow_path,
+            uses=uses,
+        )
+    )
+
+    findings.extend(
+        build_write_all_finding(
+            workflow_name=workflow_name,
+            workflow_path=workflow_path,
+            document=document,
+        )
+    )
+
+    findings.extend(
+        build_pull_request_target_finding(
+            workflow_name=workflow_name,
+            workflow_path=workflow_path,
+            document=document,
+        )
+    )
+
+    return findings
+
+
 def normalize_workflow(
     workflow: dict[str, Any],
     content: str | None = None,
@@ -175,16 +707,15 @@ def normalize_workflow(
     """
     Transforme un workflow brut GitHub en modèle interne.
 
-    Lorsque le contenu YAML est disponible, les directives ``uses`` sont
-    extraites puis normalisées afin d'identifier les actions réellement
-    référencées par le workflow.
+    Lorsque le contenu YAML est disponible, GitRecon extrait les
+    directives ``uses`` et exécute les contrôles de sécurité.
 
     Args:
         workflow:
-            Métadonnées brutes du workflow retournées par GitHub.
+            Métadonnées retournées par GitHub.
 
         content:
-            Contenu YAML du workflow lorsqu'il a pu être récupéré.
+            Contenu YAML éventuel.
 
     Returns:
         Workflow normalisé.
@@ -194,24 +725,38 @@ def normalize_workflow(
     path = workflow.get("path")
     state = workflow.get("state")
 
+    workflow_name = (
+        name.strip() if isinstance(name, str) and name.strip() else "Workflow sans nom"
+    )
+
+    workflow_path = path if isinstance(path, str) else None
+
     uses: list[str] = []
+    findings: list[SecurityFinding] = []
 
     if content is not None:
-        uses = extract_uses_from_yaml(content)
+        document = load_workflow_yaml(content)
+
+        if document is not None:
+            uses = extract_uses_from_document(document)
+
+            findings = analyze_workflow_findings(
+                workflow_name=workflow_name,
+                workflow_path=workflow_path,
+                document=document,
+                uses=uses,
+            )
 
     actions = extract_actions(uses)
 
     return WorkflowInfo(
-        name=(
-            name.strip()
-            if isinstance(name, str) and name.strip()
-            else "Workflow sans nom"
-        ),
-        path=path if isinstance(path, str) else None,
+        name=workflow_name,
+        path=workflow_path,
         state=state if isinstance(state, str) else None,
         content_available=content is not None,
         actions=actions,
         uses=uses,
+        findings=findings,
     )
 
 
@@ -221,16 +766,6 @@ def build_github_actions_status(
 ) -> GitHubActionsStatus:
     """
     Construit l'état normalisé de GitHub Actions.
-
-    Args:
-        workflows:
-            Workflows bruts retournés par l'API GitHub.
-
-        workflow_contents:
-            Contenus YAML indexés par chemin de workflow.
-
-    Returns:
-        État normalisé de GitHub Actions.
     """
 
     contents = workflow_contents or {}
@@ -261,19 +796,7 @@ def workflow_matches(
     keywords: Iterable[str],
 ) -> bool:
     """
-    Vérifie si un workflow correspond à une série de mots-clés.
-
-    La recherche est effectuée dans le nom et dans le chemin du workflow.
-
-    Args:
-        workflow:
-            Workflow à analyser.
-
-        keywords:
-            Mots-clés associés à une catégorie.
-
-    Returns:
-        ``True`` lorsqu'au moins un mot-clé est détecté.
+    Recherche des mots-clés dans les métadonnées d'un workflow.
     """
 
     searchable_content = " ".join(
@@ -292,19 +815,6 @@ def detect_workflows(
 ) -> WorkflowDetection:
     """
     Détecte des workflows à partir de leurs métadonnées.
-
-    Cette fonction est utilisée comme mécanisme heuristique lorsque
-    l'analyse du contenu YAML ne suffit pas ou n'est pas disponible.
-
-    Args:
-        workflows:
-            Workflows à analyser.
-
-        keywords:
-            Mots-clés utilisés pour la classification.
-
-    Returns:
-        Résultat de la détection.
     """
 
     matches = [
@@ -328,19 +838,6 @@ def workflow_uses_action(
 ) -> bool:
     """
     Vérifie si un workflow utilise une action donnée.
-
-    La comparaison est réalisée sur les noms d'actions normalisés,
-    sans tenir compte de la version située après ``@``.
-
-    Args:
-        workflow:
-            Workflow à analyser.
-
-        action_prefixes:
-            Actions ou préfixes d'actions recherchés.
-
-    Returns:
-        ``True`` lorsqu'une action correspond à l'un des préfixes.
     """
 
     normalized_prefixes = tuple(prefix.lower() for prefix in action_prefixes)
@@ -355,17 +852,7 @@ def detect_action_usage(
     actions: tuple[str, ...],
 ) -> WorkflowDetection:
     """
-    Détecte les workflows utilisant réellement certaines actions.
-
-    Args:
-        workflows:
-            Workflows à analyser.
-
-        actions:
-            Actions ou préfixes recherchés.
-
-    Returns:
-        Résultat de la détection.
+    Détecte les workflows utilisant certaines actions.
     """
 
     matches = [
@@ -387,21 +874,7 @@ def merge_workflow_detections(
     *detections: WorkflowDetection,
 ) -> WorkflowDetection:
     """
-    Fusionne plusieurs résultats de détection sans créer de doublons.
-
-    Cette fonction permet de combiner plusieurs sources d'information,
-    par exemple :
-
-    - analyse réelle du contenu YAML ;
-    - métadonnées GitHub ;
-    - heuristiques basées sur le nom du workflow.
-
-    Args:
-        detections:
-            Résultats de détection à fusionner.
-
-    Returns:
-        Détection consolidée.
+    Fusionne plusieurs résultats de détection sans doublons.
     """
 
     workflows: list[WorkflowInfo] = []
@@ -421,24 +894,7 @@ def build_security_automation_analysis(
     workflows: list[WorkflowInfo],
 ) -> SecurityAutomationAnalysis:
     """
-    Analyse les automatisations GitHub Actions du dépôt.
-
-    Certaines technologies disposent d'une action GitHub identifiable
-    directement dans le YAML. D'autres nécessitent encore une analyse
-    heuristique basée sur les métadonnées.
-
-    CodeQL est volontairement détecté de deux manières :
-
-    1. utilisation réelle de ``github/codeql-action`` dans le YAML ;
-    2. présence d'un workflow explicitement identifié comme CodeQL
-       par GitHub lorsque le contenu YAML n'est pas disponible.
-
-    Args:
-        workflows:
-            Workflows normalisés à analyser.
-
-    Returns:
-        Analyse des automatisations détectées.
+    Analyse les automatisations GitHub Actions détectées.
     """
 
     # CodeQL
@@ -467,10 +923,6 @@ def build_security_automation_analysis(
     )
 
     # zizmor
-
-    # zizmor peut être utilisé sous forme d'action GitHub ou être lancé
-    # directement comme outil CLI. On combine donc la détection réelle
-    # d'action avec les métadonnées du workflow.
     zizmor_from_actions = detect_action_usage(
         workflows,
         (
@@ -489,7 +941,7 @@ def build_security_automation_analysis(
         zizmor_from_metadata,
     )
 
-    # Outils liés aux dépendances
+    # Dépendances
     dependency_tools_from_metadata = detect_workflows(
         workflows,
         (
@@ -504,7 +956,7 @@ def build_security_automation_analysis(
         dependency_tools_from_metadata,
     )
 
-    # Tests / CI
+    # Tests
     tests = detect_workflows(
         workflows,
         (
@@ -517,7 +969,7 @@ def build_security_automation_analysis(
         ),
     )
 
-    # Release / publication / déploiement
+    # Publication
     releases = detect_workflows(
         workflows,
         (
@@ -539,6 +991,38 @@ def build_security_automation_analysis(
     )
 
 
+def build_workflow_security_analysis(
+    workflows: list[WorkflowInfo],
+) -> WorkflowSecurityAnalysis:
+    """
+    Agrège les findings générés pour l'ensemble des workflows.
+
+    Args:
+        workflows:
+            Workflows analysés.
+
+    Returns:
+        Résumé des findings par sévérité.
+    """
+
+    findings: list[SecurityFinding] = []
+
+    for workflow in workflows:
+        findings.extend(workflow.findings)
+
+    return WorkflowSecurityAnalysis(
+        findings=findings,
+        total=len(findings),
+        critical=sum(
+            finding.severity == FindingSeverity.CRITICAL for finding in findings
+        ),
+        high=sum(finding.severity == FindingSeverity.HIGH for finding in findings),
+        medium=sum(finding.severity == FindingSeverity.MEDIUM for finding in findings),
+        low=sum(finding.severity == FindingSeverity.LOW for finding in findings),
+        info=sum(finding.severity == FindingSeverity.INFO for finding in findings),
+    )
+
+
 def build_security_analysis(
     security_policy: tuple[bool, str | None],
     license_file: tuple[bool, str | None],
@@ -550,35 +1034,7 @@ def build_security_analysis(
     warnings: list[str] | None = None,
 ) -> SecurityAnalysis:
     """
-    Construit l'analyse de sécurité complète d'un dépôt GitHub.
-
-    Args:
-        security_policy:
-            Résultat de la recherche d'un fichier SECURITY.md.
-
-        license_file:
-            Résultat de la recherche d'un fichier de licence.
-
-        code_of_conduct:
-            Résultat de la recherche d'un code de conduite.
-
-        contributing_guide:
-            Résultat de la recherche d'un guide de contribution.
-
-        dependabot:
-            Résultat de la recherche d'une configuration Dependabot.
-
-        workflows:
-            Liste brute des workflows GitHub Actions.
-
-        workflow_contents:
-            Contenus YAML des workflows indexés par chemin.
-
-        warnings:
-            Avertissements éventuels rencontrés pendant la collecte.
-
-    Returns:
-        Analyse de sécurité normalisée.
+    Construit l'analyse de sécurité complète du dépôt.
     """
 
     github_actions = build_github_actions_status(
@@ -588,6 +1044,8 @@ def build_security_analysis(
 
     automation = build_security_automation_analysis(github_actions.workflows)
 
+    workflow_security = build_workflow_security_analysis(github_actions.workflows)
+
     return SecurityAnalysis(
         security_policy=build_file_status(security_policy),
         license=build_file_status(license_file),
@@ -596,5 +1054,6 @@ def build_security_analysis(
         dependabot=build_file_status(dependabot),
         github_actions=github_actions,
         automation=automation,
+        workflow_security=workflow_security,
         warnings=warnings or [],
     )

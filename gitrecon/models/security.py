@@ -13,6 +13,69 @@ La logique d'interprétation est implémentée dans
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
+
+
+class FindingSeverity(StrEnum):
+    """
+    Niveaux de sévérité utilisés par les findings GitRecon.
+
+    Les niveaux sont volontairement simples afin de conserver une
+    classification lisible avant l'introduction éventuelle d'un
+    système de score plus avancé.
+    """
+
+    INFO = "INFO"
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+@dataclass(slots=True)
+class SecurityFinding:
+    """
+    Représente un constat de sécurité détecté par GitRecon.
+
+    Un finding décrit une configuration ou un comportement observé
+    pouvant avoir un impact sur la sécurité du dépôt.
+
+    Attributes:
+        rule_id:
+            Identifiant stable de la règle ayant généré le finding.
+
+        title:
+            Intitulé court du constat.
+
+        description:
+            Explication détaillée du problème détecté.
+
+        severity:
+            Niveau de sévérité associé au finding.
+
+        workflow:
+            Nom du workflow concerné lorsque le finding provient
+            d'une analyse GitHub Actions.
+
+        path:
+            Chemin du fichier concerné lorsque celui-ci est connu.
+
+        evidence:
+            Élément observé ayant permis de générer le finding.
+
+        recommendation:
+            Recommandation permettant de réduire le risque.
+    """
+
+    rule_id: str
+    title: str
+    description: str
+    severity: FindingSeverity
+
+    workflow: str | None = None
+    path: str | None = None
+    evidence: str | None = None
+    recommendation: str | None = None
 
 
 @dataclass(slots=True)
@@ -34,7 +97,6 @@ class SecurityFileStatus:
 
         path:
             Chemin du fichier lorsqu'il a été trouvé.
-            La valeur est ``None`` lorsque le fichier est absent.
     """
 
     present: bool
@@ -47,8 +109,7 @@ class WorkflowInfo:
     Représente un workflow GitHub Actions détecté.
 
     Un workflow peut être connu par GitHub sans que son fichier YAML
-    soit directement accessible dans le dépôt. C'est notamment le cas
-    de certaines automatisations gérées dynamiquement par GitHub.
+    soit directement accessible dans le dépôt.
 
     Attributes:
         name:
@@ -64,18 +125,16 @@ class WorkflowInfo:
             Indique si GitRecon a effectivement pu récupérer le contenu
             YAML du workflow.
 
-            ``True`` signifie que le fichier a été récupéré et analysé.
-
-            ``False`` signifie que seules les métadonnées GitHub sont
-            disponibles.
-
         actions:
             Liste normalisée des actions GitHub externes détectées
-            dans les directives ``uses`` du workflow.
+            dans les directives ``uses``.
 
         uses:
             Liste complète des valeurs ``uses`` rencontrées dans
             le contenu YAML.
+
+        findings:
+            Findings de sécurité associés directement à ce workflow.
     """
 
     name: str
@@ -86,6 +145,7 @@ class WorkflowInfo:
 
     actions: list[str] = field(default_factory=list)
     uses: list[str] = field(default_factory=list)
+    findings: list[SecurityFinding] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -134,10 +194,6 @@ class SecurityAutomationAnalysis:
     """
     Regroupe les automatisations liées à la sécurité et au cycle
     de développement détectées dans GitHub Actions.
-
-    Certaines catégories peuvent être confirmées par l'analyse réelle
-    des actions présentes dans les fichiers YAML, tandis que d'autres
-    utilisent encore des heuristiques basées sur les métadonnées.
     """
 
     codeql: WorkflowDetection
@@ -149,16 +205,54 @@ class SecurityAutomationAnalysis:
 
 
 @dataclass(slots=True)
+class WorkflowSecurityAnalysis:
+    """
+    Regroupe les résultats de l'analyse de sécurité des workflows.
+
+    Attributes:
+        findings:
+            Ensemble des findings générés lors de l'analyse.
+
+        total:
+            Nombre total de findings.
+
+        critical:
+            Nombre de findings critiques.
+
+        high:
+            Nombre de findings de sévérité élevée.
+
+        medium:
+            Nombre de findings de sévérité moyenne.
+
+        low:
+            Nombre de findings de faible sévérité.
+
+        info:
+            Nombre de findings informatifs.
+    """
+
+    findings: list[SecurityFinding] = field(default_factory=list)
+
+    total: int = 0
+    critical: int = 0
+    high: int = 0
+    medium: int = 0
+    low: int = 0
+    info: int = 0
+
+
+@dataclass(slots=True)
 class SecurityAnalysis:
     """
     Regroupe les informations de sécurité et de gouvernance d'un dépôt.
 
-    Ce modèle contient uniquement des observations normalisées.
-    Aucun score de sécurité n'est calculé à ce niveau.
+    Ce modèle contient les observations normalisées issues des fichiers
+    communautaires, de GitHub Actions et des contrôles de sécurité.
 
     Attributes:
         security_policy:
-            État de la politique de sécurité du dépôt.
+            État de la politique de sécurité.
 
         license:
             État du fichier de licence.
@@ -178,6 +272,9 @@ class SecurityAnalysis:
         automation:
             Résultats des détections effectuées dans les workflows.
 
+        workflow_security:
+            Résultats des contrôles de sécurité appliqués aux workflows.
+
         warnings:
             Limitations ou anomalies non bloquantes rencontrées
             pendant la collecte ou l'analyse.
@@ -191,5 +288,9 @@ class SecurityAnalysis:
 
     github_actions: GitHubActionsStatus
     automation: SecurityAutomationAnalysis
+
+    workflow_security: WorkflowSecurityAnalysis = field(
+        default_factory=WorkflowSecurityAnalysis
+    )
 
     warnings: list[str] = field(default_factory=list)
