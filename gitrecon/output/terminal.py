@@ -19,6 +19,8 @@ from gitrecon.models.security import (
     SecurityFinding,
     WorkflowDetection,
     WorkflowInfo,
+    WorkflowPermission,
+    WorkflowPermissionLevel,
 )
 
 console = Console()
@@ -27,9 +29,6 @@ console = Console()
 def create_information_table() -> Table:
     """
     Crée une table Rich générique utilisée par GitRecon.
-
-    Returns:
-        Table configurée pour l'affichage des informations.
     """
 
     table = Table(
@@ -49,16 +48,11 @@ def create_information_table() -> Table:
     return table
 
 
-def format_optional_count(value: int | None) -> str:
+def format_optional_count(
+    value: int | None,
+) -> str:
     """
     Formate une valeur numérique susceptible d'être indisponible.
-
-    Args:
-        value:
-            Valeur numérique ou ``None``.
-
-    Returns:
-        Valeur formatée pour l'affichage.
     """
 
     if value is None:
@@ -72,13 +66,6 @@ def format_security_file_status(
 ) -> str:
     """
     Formate l'état d'un fichier de sécurité ou de gouvernance.
-
-    Args:
-        status:
-            État du fichier.
-
-    Returns:
-        Représentation Rich de l'état du fichier.
     """
 
     if not status.present:
@@ -95,13 +82,6 @@ def format_detection(
 ) -> str:
     """
     Formate le résultat d'une détection de workflow.
-
-    Args:
-        detection:
-            Résultat de détection.
-
-    Returns:
-        État lisible accompagné du nombre de workflows associés.
     """
 
     if not detection.detected:
@@ -116,14 +96,7 @@ def format_severity(
     severity: FindingSeverity,
 ) -> str:
     """
-    Formate un niveau de sévérité avec une couleur adaptée.
-
-    Args:
-        severity:
-            Niveau de sévérité du finding.
-
-    Returns:
-        Représentation Rich du niveau de sévérité.
+    Formate un niveau de sévérité.
     """
 
     if severity == FindingSeverity.CRITICAL:
@@ -141,6 +114,47 @@ def format_severity(
     return "[dim]INFO[/dim]"
 
 
+def format_permission_level(
+    permission: WorkflowPermission,
+) -> str:
+    """
+    Formate le niveau d'une permission GitHub Actions.
+    """
+
+    if permission.level == WorkflowPermissionLevel.WORKFLOW:
+        return "workflow"
+
+    if permission.job:
+        return f"job:{permission.job}"
+
+    return "job"
+
+
+def format_permission_access(
+    permission: WorkflowPermission,
+) -> str:
+    """
+    Formate le niveau d'accès d'une permission.
+    """
+
+    if permission.access == "write":
+        return "[yellow]write[/yellow]"
+
+    if permission.access == "write-all":
+        return "[red]write-all[/red]"
+
+    if permission.access == "read":
+        return "[green]read[/green]"
+
+    if permission.access == "read-all":
+        return "[green]read-all[/green]"
+
+    if permission.access == "none":
+        return "[dim]none[/dim]"
+
+    return permission.access
+
+
 def display_repository(
     repository: RepositoryInfo,
     analysis: RepositoryAnalysis,
@@ -148,19 +162,10 @@ def display_repository(
 ) -> None:
     """
     Affiche le rapport complet généré par GitRecon.
-
-    Args:
-        repository:
-            Informations générales du dépôt.
-
-        analysis:
-            Analyse générale du dépôt.
-
-        security:
-            Analyse de sécurité du dépôt.
     """
 
     console.print()
+
     console.rule("[bold]GitRecon — Repository Intelligence")
 
     display_repository_information(repository)
@@ -430,7 +435,7 @@ def display_workflow_actions(
     workflow: WorkflowInfo,
 ) -> None:
     """
-    Affiche les actions détectées dans un workflow GitHub Actions.
+    Affiche les actions détectées dans un workflow.
     """
 
     if not workflow.content_available:
@@ -441,15 +446,70 @@ def display_workflow_actions(
         console.print("      [dim]Aucune action externe détectée[/dim]")
         return
 
+    console.print("      [bold]Actions[/bold]")
+
     for action in workflow.actions:
-        console.print(f"      [dim]→ {action}[/dim]")
+        console.print(f"        [dim]→ {action}[/dim]")
+
+
+def display_workflow_permissions(
+    workflow: WorkflowInfo,
+) -> None:
+    """
+    Affiche les permissions détectées dans un workflow.
+    """
+
+    if not workflow.content_available:
+        return
+
+    if not workflow.permissions:
+        console.print("      [dim]Permissions explicites non détectées[/dim]")
+        return
+
+    console.print("      [bold]Permissions[/bold]")
+
+    table = Table(
+        show_header=False,
+        box=None,
+        padding=(0, 1),
+        pad_edge=False,
+    )
+
+    table.add_column(
+        "Niveau",
+        style="dim",
+        no_wrap=True,
+    )
+
+    table.add_column(
+        "Permission",
+        no_wrap=True,
+    )
+
+    table.add_column(
+        "Accès",
+        no_wrap=True,
+    )
+
+    for permission in workflow.permissions:
+        table.add_row(
+            format_permission_level(permission),
+            permission.scope,
+            format_permission_access(permission),
+        )
+
+    console.print(
+        table,
+        justify="left",
+        overflow="fold",
+    )
 
 
 def display_github_actions_workflows(
     security: SecurityAnalysis,
 ) -> None:
     """
-    Affiche les workflows GitHub Actions et leurs actions détectées.
+    Affiche les workflows GitHub Actions détectés.
     """
 
     if not security.github_actions.workflows:
@@ -464,6 +524,7 @@ def display_github_actions_workflows(
             console.print(f"      [dim]{workflow.path}[/dim]")
 
         display_workflow_actions(workflow)
+        display_workflow_permissions(workflow)
 
 
 def display_workflow_security(

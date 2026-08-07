@@ -20,9 +20,8 @@ class FindingSeverity(StrEnum):
     """
     Niveaux de sévérité utilisés par les findings GitRecon.
 
-    Les niveaux sont volontairement simples afin de conserver une
-    classification lisible avant l'introduction éventuelle d'un
-    système de score plus avancé.
+    Les niveaux restent volontairement simples afin de conserver une
+    classification lisible et exploitable dans les rapports.
     """
 
     INFO = "INFO"
@@ -30,6 +29,49 @@ class FindingSeverity(StrEnum):
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
     CRITICAL = "CRITICAL"
+
+
+class WorkflowPermissionLevel(StrEnum):
+    """
+    Niveau d'une permission GitHub Actions.
+
+    ``WORKFLOW`` représente une permission déclarée au niveau global
+    du workflow.
+
+    ``JOB`` représente une permission déclarée spécifiquement
+    au niveau d'un job.
+    """
+
+    WORKFLOW = "workflow"
+    JOB = "job"
+
+
+@dataclass(slots=True)
+class WorkflowPermission:
+    """
+    Représente une permission GitHub Actions détectée.
+
+    Attributes:
+        scope:
+            Portée de permission GitHub, par exemple ``contents``,
+            ``issues`` ou ``pull-requests``.
+
+        access:
+            Niveau d'accès configuré, par exemple ``read``, ``write``
+            ou ``none``.
+
+        level:
+            Niveau auquel la permission est déclarée.
+
+        job:
+            Nom du job concerné lorsque la permission est définie
+            au niveau d'un job.
+    """
+
+    scope: str
+    access: str
+    level: WorkflowPermissionLevel
+    job: str | None = None
 
 
 @dataclass(slots=True)
@@ -133,6 +175,9 @@ class WorkflowInfo:
             Liste complète des valeurs ``uses`` rencontrées dans
             le contenu YAML.
 
+        permissions:
+            Permissions GitHub Actions détectées dans le workflow.
+
         findings:
             Findings de sécurité associés directement à ce workflow.
     """
@@ -145,6 +190,7 @@ class WorkflowInfo:
 
     actions: list[str] = field(default_factory=list)
     uses: list[str] = field(default_factory=list)
+    permissions: list[WorkflowPermission] = field(default_factory=list)
     findings: list[SecurityFinding] = field(default_factory=list)
 
 
