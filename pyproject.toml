@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gitrecon"
-version = "0.1.0"
+version = "0.3.7"
 description = "GitHub Repository Intelligence & Security Scanner"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,6 +25,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "bandit>=1.8",
+    "pip-audit>=2.9",
     "pytest>=8.0",
     "ruff>=0.6",
 ]
@@ -32,6 +34,15 @@ dev = [
 
 [project.scripts]
 gitrecon = "gitrecon.cli:app"
+
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gitrecon*"]
+exclude = [
+    "tests*",
+    "reports*",
+]
 
 
 [tool.ruff]

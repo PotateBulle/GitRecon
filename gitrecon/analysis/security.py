@@ -47,6 +47,8 @@ VALID_PERMISSION_ACCESS = {
     "write-all",
 }
 
+MAX_WORKFLOW_YAML_CHARACTERS = 1_000_000
+
 
 def build_file_status(
     result: tuple[bool, str | None],
@@ -80,6 +82,9 @@ def load_workflow_yaml(
     if not content.strip():
         return None
 
+    if len(content) > MAX_WORKFLOW_YAML_CHARACTERS:
+        return None
+
     try:
         document = yaml.safe_load(content)
     except yaml.YAMLError:
@@ -96,26 +101,52 @@ def extract_uses_from_document(
 ) -> list[str]:
     """
     Extrait toutes les directives ``uses`` d'un document YAML.
+
+    Le parcours est itératif et mémorise les conteneurs déjà visités.
+    Cette approche évite les boucles infinies provoquées par des aliases
+    YAML cycliques ainsi que les erreurs de récursion sur des structures
+    fortement imbriquées.
     """
 
     uses_values: list[str] = []
+    seen_uses: set[str] = set()
+    visited_containers: set[int] = set()
 
-    def walk(value: Any) -> None:
+    stack: list[Any] = [document]
+
+    while stack:
+        value = stack.pop()
+
         if isinstance(value, dict):
-            for key, item in value.items():
+            object_id = id(value)
+
+            if object_id in visited_containers:
+                continue
+
+            visited_containers.add(object_id)
+
+            for key, item in reversed(list(value.items())):
                 if key == "uses" and isinstance(item, str):
                     normalized_value = item.strip()
 
-                    if normalized_value and normalized_value not in uses_values:
+                    if normalized_value and normalized_value not in seen_uses:
+                        seen_uses.add(normalized_value)
                         uses_values.append(normalized_value)
 
-                walk(item)
+                if isinstance(item, (dict, list)):
+                    stack.append(item)
 
         elif isinstance(value, list):
-            for item in value:
-                walk(item)
+            object_id = id(value)
 
-    walk(document)
+            if object_id in visited_containers:
+                continue
+
+            visited_containers.add(object_id)
+
+            for item in reversed(value):
+                if isinstance(item, (dict, list)):
+                    stack.append(item)
 
     return uses_values
 

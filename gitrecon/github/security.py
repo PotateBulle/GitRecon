@@ -12,6 +12,7 @@ et se trouve dans ``gitrecon.analysis.security``.
 from __future__ import annotations
 
 import base64
+import binascii
 from typing import Any
 
 from gitrecon.github.client import GitHubAPIError, GitHubClient
@@ -62,11 +63,7 @@ def repository_file_exists(
             return True, path
 
         except GitHubAPIError as exc:
-            error_message = str(exc).lower()
-
-            # Une réponse HTTP 404 indique simplement que le fichier
-            # n'existe pas à cet emplacement.
-            if "erreur http 404" in error_message:
+            if exc.status_code == 404:
                 continue
 
             raise
@@ -81,12 +78,6 @@ def get_security_policy(
 ) -> tuple[bool, str | None]:
     """
     Recherche un fichier SECURITY.md.
-
-    GitHub reconnaît notamment les emplacements suivants :
-
-    - SECURITY.md ;
-    - .github/SECURITY.md ;
-    - docs/SECURITY.md.
     """
 
     return repository_file_exists(
@@ -179,11 +170,6 @@ def get_dependabot_configuration(
 ) -> tuple[bool, str | None]:
     """
     Recherche une configuration Dependabot.
-
-    Dependabot utilise normalement l'un des fichiers suivants :
-
-    - .github/dependabot.yml ;
-    - .github/dependabot.yaml.
     """
 
     return repository_file_exists(
@@ -234,11 +220,7 @@ def get_github_actions_workflows(
         )
 
     except GitHubAPIError as exc:
-        error_message = str(exc).lower()
-
-        # GitHub peut retourner 404 lorsqu'Actions n'est pas disponible
-        # ou lorsque le dépôt ne possède aucun workflow accessible.
-        if "erreur http 404" in error_message:
+        if exc.status_code == 404:
             return []
 
         raise
@@ -246,12 +228,15 @@ def get_github_actions_workflows(
     if not isinstance(data, dict):
         return []
 
-    workflows = data.get("workflows", [])
+    workflows = data.get(
+        "workflows",
+        [],
+    )
 
     if not isinstance(workflows, list):
         return []
 
-    return workflows
+    return [workflow for workflow in workflows if isinstance(workflow, dict)]
 
 
 def get_repository_file_content(
@@ -294,9 +279,7 @@ def get_repository_file_content(
         data = client.get(endpoint)
 
     except GitHubAPIError as exc:
-        error_message = str(exc).lower()
-
-        if "erreur http 404" in error_message:
+        if exc.status_code == 404:
             return None
 
         raise
@@ -310,16 +293,24 @@ def get_repository_file_content(
     if not isinstance(content, str):
         return None
 
-    # Lorsque GitHub retourne explicitement du Base64, le contenu doit
-    # être décodé avant toute analyse.
+    # Base64
     if encoding == "base64":
+        normalized_content = "".join(content.split())
+
+        if not normalized_content:
+            return ""
+
         try:
             decoded_content = base64.b64decode(
-                content,
-                validate=False,
+                normalized_content,
+                validate=True,
             )
 
-        except (ValueError, TypeError):
+        except (
+            binascii.Error,
+            ValueError,
+            TypeError,
+        ):
             return None
 
         return decoded_content.decode(
@@ -327,9 +318,41 @@ def get_repository_file_content(
             errors="replace",
         )
 
-    # Certains endpoints ou comportements futurs pourraient retourner
-    # directement une chaîne non encodée.
+    # Contenu texte direct
     return content
+
+
+def is_repository_workflow_path(
+    path: str,
+) -> bool:
+    """
+    Vérifie qu'un chemin correspond à un workflow YAML du dépôt.
+
+    Seuls les fichiers stockés sous ``.github/workflows/`` avec une
+    extension ``.yml`` ou ``.yaml`` sont acceptés.
+
+    Les chemins contenant un segment ``..`` sont rejetés.
+    """
+
+    normalized_path = path.strip()
+
+    if not normalized_path:
+        return False
+
+    if not normalized_path.startswith(".github/workflows/"):
+        return False
+
+    if not normalized_path.lower().endswith(
+        (
+            ".yml",
+            ".yaml",
+        )
+    ):
+        return False
+
+    path_parts = normalized_path.split("/")
+
+    return ".." not in path_parts
 
 
 def get_github_actions_workflow_contents(
@@ -339,7 +362,12 @@ def get_github_actions_workflow_contents(
     workflows: list[dict[str, Any]],
 ) -> dict[str, str]:
     """
-    Récupère le contenu YAML de chaque workflow GitHub Actions.
+    Récupère le contenu YAML des workflows GitHub Actions du dépôt.
+
+    Seuls les chemins correspondant à de vrais fichiers YAML présents
+    sous ``.github/workflows/`` sont récupérés.
+
+    Les workflows internes ou dynamiques exposés par GitHub sont ignorés.
 
     Args:
         client:
@@ -361,21 +389,28 @@ def get_github_actions_workflow_contents(
     contents: dict[str, str] = {}
 
     for workflow in workflows:
+        if not isinstance(workflow, dict):
+            continue
+
         path = workflow.get("path")
 
         if not isinstance(path, str):
+            continue
+
+        normalized_path = path.strip()
+
+        if not is_repository_workflow_path(normalized_path):
             continue
 
         content = get_repository_file_content(
             client=client,
             owner=owner,
             repository=repository,
-            path=path,
+            path=normalized_path,
         )
 
         if content is None:
             continue
 
-        contents[path] = content
-
+        contents[normalized_path] = content
     return contents

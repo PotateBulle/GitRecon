@@ -975,3 +975,23 @@ jobs:
     assert "GH-ACTIONS-009" in rule_ids
     assert "GH-ACTIONS-010" in rule_ids
     assert "GH-ACTIONS-011" in rule_ids
+
+
+def test_extract_uses_handles_cyclic_yaml_aliases() -> None:
+    content = """
+root: &root
+  uses: actions/checkout@v4
+  cycle: *root
+"""
+
+    uses = extract_uses_from_yaml(content)
+
+    assert uses == [
+        "actions/checkout@v4",
+    ]
+
+
+def test_oversized_workflow_yaml_returns_none() -> None:
+    content = "a" * 1_000_001
+
+    assert load_workflow_yaml(content) is None
