@@ -1,18 +1,17 @@
 """
-Fonctions permettant de collecter les informations de sécurité
-et de gouvernance d'un dépôt GitHub.
+Collecte des informations de sécurité et de gouvernance d'un dépôt GitHub.
 
 Ce module interroge l'API REST GitHub afin de détecter la présence
-de fichiers et configurations couramment utilisés pour documenter
-la sécurité, les contributions et l'automatisation d'un projet.
+de fichiers communautaires, de configurations liées à la sécurité
+et de workflows GitHub Actions.
 
-La logique d'interprétation des résultats n'est volontairement pas
-implémentée ici. Ce module se limite à la collecte des informations
-fournies par GitHub.
+La logique d'interprétation des données reste volontairement séparée
+et se trouve dans ``gitrecon.analysis.security``.
 """
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 from gitrecon.github.client import GitHubAPIError, GitHubClient
@@ -25,11 +24,10 @@ def repository_file_exists(
     paths: tuple[str, ...],
 ) -> tuple[bool, str | None]:
     """
-    Vérifie si au moins un fichier donné existe dans un dépôt GitHub.
+    Vérifie si au moins un des fichiers fournis existe dans le dépôt.
 
     Plusieurs emplacements peuvent être testés pour une même ressource.
-    Cette approche est utile pour certains fichiers communautaires que
-    GitHub accepte dans différents répertoires, comme ``SECURITY.md``.
+    La fonction s'arrête dès qu'un fichier correspondant est trouvé.
 
     Args:
         client:
@@ -42,17 +40,17 @@ def repository_file_exists(
             Nom du dépôt.
 
         paths:
-            Emplacements à tester dans l'ordre.
+            Chemins à vérifier dans l'ordre.
 
     Returns:
         Tuple contenant :
 
         - ``True`` et le chemin trouvé lorsque le fichier existe ;
-        - ``False`` et ``None`` lorsqu'aucun emplacement ne correspond.
+        - ``False`` et ``None`` lorsqu'aucun fichier n'est trouvé.
 
     Raises:
         GitHubAPIError:
-            Lorsqu'une erreur autre qu'une absence de fichier survient.
+            Lorsqu'une erreur autre qu'un HTTP 404 survient.
     """
 
     for path in paths:
@@ -67,16 +65,10 @@ def repository_file_exists(
             error_message = str(exc).lower()
 
             # Une réponse HTTP 404 indique simplement que le fichier
-            # recherché n'existe pas à cet emplacement.
-            #
-            # Cette absence n'est pas considérée comme une erreur
-            # bloquante pour GitRecon.
+            # n'existe pas à cet emplacement.
             if "erreur http 404" in error_message:
                 continue
 
-            # Toute autre erreur doit être propagée afin de ne pas
-            # masquer un problème d'authentification, de permissions
-            # ou de communication avec GitHub.
             raise
 
     return False, None
@@ -88,14 +80,13 @@ def get_security_policy(
     repository: str,
 ) -> tuple[bool, str | None]:
     """
-    Recherche une politique de sécurité dans le dépôt.
+    Recherche un fichier SECURITY.md.
 
-    GitHub reconnaît notamment ``SECURITY.md`` lorsqu'il est placé
-    à la racine, dans ``.github`` ou dans ``docs``.
+    GitHub reconnaît notamment les emplacements suivants :
 
-    Returns:
-        Indique si une politique de sécurité a été trouvée ainsi que
-        son emplacement éventuel.
+    - SECURITY.md ;
+    - .github/SECURITY.md ;
+    - docs/SECURITY.md.
     """
 
     return repository_file_exists(
@@ -117,13 +108,6 @@ def get_license_file(
 ) -> tuple[bool, str | None]:
     """
     Recherche un fichier de licence dans le dépôt.
-
-    Plusieurs noms couramment utilisés sont vérifiés afin de ne pas
-    dépendre d'une seule convention de nommage.
-
-    Returns:
-        Indique si un fichier de licence a été trouvé ainsi que son
-        emplacement éventuel.
     """
 
     return repository_file_exists(
@@ -148,10 +132,6 @@ def get_code_of_conduct(
 ) -> tuple[bool, str | None]:
     """
     Recherche un code de conduite dans le dépôt.
-
-    Returns:
-        Indique si un code de conduite a été trouvé ainsi que son
-        emplacement éventuel.
     """
 
     return repository_file_exists(
@@ -174,10 +154,6 @@ def get_contributing_guide(
 ) -> tuple[bool, str | None]:
     """
     Recherche un guide de contribution dans le dépôt.
-
-    Returns:
-        Indique si un fichier de contribution a été trouvé ainsi que
-        son emplacement éventuel.
     """
 
     return repository_file_exists(
@@ -189,6 +165,9 @@ def get_contributing_guide(
             ".github/CONTRIBUTING.md",
             "docs/CONTRIBUTING.md",
             "CONTRIBUTING.txt",
+            "CONTRIBUTING.rst",
+            ".github/CONTRIBUTING.rst",
+            "docs/CONTRIBUTING.rst",
         ),
     )
 
@@ -201,17 +180,10 @@ def get_dependabot_configuration(
     """
     Recherche une configuration Dependabot.
 
-    Dependabot utilise généralement le fichier :
+    Dependabot utilise normalement l'un des fichiers suivants :
 
-        .github/dependabot.yml
-
-    ou :
-
-        .github/dependabot.yaml
-
-    Returns:
-        Indique si une configuration Dependabot a été trouvée ainsi
-        que son emplacement.
+    - .github/dependabot.yml ;
+    - .github/dependabot.yaml.
     """
 
     return repository_file_exists(
@@ -231,15 +203,11 @@ def get_github_actions_workflows(
     repository: str,
 ) -> list[dict[str, Any]]:
     """
-    Récupère les workflows GitHub Actions configurés dans le dépôt.
-
-    L'endpoint GitHub retourne les workflows disponibles ainsi qu'un
-    compteur total. GitRecon conserve ici uniquement la liste des
-    workflows afin de laisser la logique d'analyse à un autre module.
+    Récupère les workflows GitHub Actions du dépôt.
 
     Args:
         client:
-            Client utilisé pour communiquer avec GitHub.
+            Client GitHub.
 
         owner:
             Propriétaire du dépôt.
@@ -248,11 +216,11 @@ def get_github_actions_workflows(
             Nom du dépôt.
 
     Returns:
-        Liste des workflows GitHub Actions.
+        Liste brute des workflows GitHub Actions.
 
     Raises:
         GitHubAPIError:
-            Lorsqu'une erreur inattendue survient pendant la requête.
+            Lorsqu'une erreur inattendue survient.
     """
 
     endpoint = f"/repos/{owner}/{repository}/actions/workflows"
@@ -268,13 +236,15 @@ def get_github_actions_workflows(
     except GitHubAPIError as exc:
         error_message = str(exc).lower()
 
-        # Certains dépôts ou tokens peuvent ne pas permettre l'accès
-        # aux informations GitHub Actions. Dans ce cas, la requête ne
-        # doit pas nécessairement empêcher l'analyse des autres éléments.
+        # GitHub peut retourner 404 lorsqu'Actions n'est pas disponible
+        # ou lorsque le dépôt ne possède aucun workflow accessible.
         if "erreur http 404" in error_message:
             return []
 
         raise
+
+    if not isinstance(data, dict):
+        return []
 
     workflows = data.get("workflows", [])
 
@@ -282,3 +252,130 @@ def get_github_actions_workflows(
         return []
 
     return workflows
+
+
+def get_repository_file_content(
+    client: GitHubClient,
+    owner: str,
+    repository: str,
+    path: str,
+) -> str | None:
+    """
+    Récupère le contenu textuel d'un fichier présent dans le dépôt.
+
+    L'API Contents de GitHub retourne généralement le contenu d'un fichier
+    encodé en Base64. Cette fonction effectue automatiquement le décodage.
+
+    Args:
+        client:
+            Client GitHub.
+
+        owner:
+            Propriétaire du dépôt.
+
+        repository:
+            Nom du dépôt.
+
+        path:
+            Chemin du fichier dans le dépôt.
+
+    Returns:
+        Contenu textuel du fichier ou ``None`` lorsqu'il ne peut pas être
+        récupéré ou interprété.
+
+    Raises:
+        GitHubAPIError:
+            Lorsqu'une erreur inattendue survient.
+    """
+
+    endpoint = f"/repos/{owner}/{repository}/contents/{path}"
+
+    try:
+        data = client.get(endpoint)
+
+    except GitHubAPIError as exc:
+        error_message = str(exc).lower()
+
+        if "erreur http 404" in error_message:
+            return None
+
+        raise
+
+    if not isinstance(data, dict):
+        return None
+
+    content = data.get("content")
+    encoding = data.get("encoding")
+
+    if not isinstance(content, str):
+        return None
+
+    # Lorsque GitHub retourne explicitement du Base64, le contenu doit
+    # être décodé avant toute analyse.
+    if encoding == "base64":
+        try:
+            decoded_content = base64.b64decode(
+                content,
+                validate=False,
+            )
+
+        except (ValueError, TypeError):
+            return None
+
+        return decoded_content.decode(
+            "utf-8",
+            errors="replace",
+        )
+
+    # Certains endpoints ou comportements futurs pourraient retourner
+    # directement une chaîne non encodée.
+    return content
+
+
+def get_github_actions_workflow_contents(
+    client: GitHubClient,
+    owner: str,
+    repository: str,
+    workflows: list[dict[str, Any]],
+) -> dict[str, str]:
+    """
+    Récupère le contenu YAML de chaque workflow GitHub Actions.
+
+    Args:
+        client:
+            Client GitHub.
+
+        owner:
+            Propriétaire du dépôt.
+
+        repository:
+            Nom du dépôt.
+
+        workflows:
+            Liste brute des workflows retournée par GitHub.
+
+    Returns:
+        Dictionnaire associant le chemin d'un workflow à son contenu YAML.
+    """
+
+    contents: dict[str, str] = {}
+
+    for workflow in workflows:
+        path = workflow.get("path")
+
+        if not isinstance(path, str):
+            continue
+
+        content = get_repository_file_content(
+            client=client,
+            owner=owner,
+            repository=repository,
+            path=path,
+        )
+
+        if content is None:
+            continue
+
+        contents[path] = content
+
+    return contents

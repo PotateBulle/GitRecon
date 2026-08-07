@@ -16,6 +16,7 @@ from gitrecon.models.security import (
     SecurityAnalysis,
     SecurityFileStatus,
     WorkflowDetection,
+    WorkflowInfo,
 )
 
 console = Console()
@@ -68,14 +69,14 @@ def format_security_file_status(
     status: SecurityFileStatus,
 ) -> str:
     """
-    Formate l'état d'un fichier lié à la sécurité ou à la gouvernance.
+    Formate l'état d'un fichier de sécurité ou de gouvernance.
 
     Args:
         status:
-            État du fichier à afficher.
+            État du fichier.
 
     Returns:
-        Chaîne Rich représentant la présence ou l'absence du fichier.
+        Représentation Rich de l'état du fichier.
     """
 
     if not status.present:
@@ -95,11 +96,10 @@ def format_detection(
 
     Args:
         detection:
-            Résultat de détection à présenter.
+            Résultat de détection.
 
     Returns:
-        État de la détection accompagné du nombre de workflows
-        correspondants lorsqu'au moins un élément a été trouvé.
+        État lisible accompagné du nombre de workflows associés.
     """
 
     if not detection.detected:
@@ -123,10 +123,10 @@ def display_repository(
             Informations générales du dépôt.
 
         analysis:
-            Résultats de l'analyse générale.
+            Analyse générale du dépôt.
 
         security:
-            Résultats de l'analyse de sécurité.
+            Analyse de sécurité du dépôt.
     """
 
     console.print()
@@ -147,6 +147,10 @@ def display_repository_information(
 ) -> None:
     """
     Affiche les informations générales du dépôt.
+
+    Args:
+        repository:
+            Informations générales du dépôt GitHub.
     """
 
     console.print("\n[bold cyan]Repository[/bold cyan]")
@@ -199,6 +203,13 @@ def display_statistics(
 ) -> None:
     """
     Affiche les principales statistiques du dépôt.
+
+    Args:
+        repository:
+            Informations générales du dépôt.
+
+        analysis:
+            Analyse complémentaire du dépôt.
     """
 
     console.print("\n[bold cyan]Statistics[/bold cyan]")
@@ -243,6 +254,10 @@ def display_languages(
 ) -> None:
     """
     Affiche la répartition des langages détectés.
+
+    Args:
+        analysis:
+            Analyse contenant les langages du dépôt.
     """
 
     console.print("\n[bold cyan]Languages[/bold cyan]")
@@ -267,6 +282,10 @@ def display_activity(
 ) -> None:
     """
     Affiche les principales informations temporelles du dépôt.
+
+    Args:
+        repository:
+            Informations générales du dépôt GitHub.
     """
 
     console.print("\n[bold cyan]Activity[/bold cyan]")
@@ -355,10 +374,14 @@ def display_security_automation(
     security: SecurityAnalysis,
 ) -> None:
     """
-    Affiche les automatisations de sécurité détectées.
+    Affiche les automatisations liées à la sécurité.
 
-    La détection repose actuellement sur les noms et chemins des
-    workflows GitHub Actions.
+    Certaines détections peuvent provenir directement du contenu YAML,
+    tandis que d'autres reposent sur les métadonnées du workflow.
+
+    Args:
+        security:
+            Analyse de sécurité du dépôt.
     """
 
     if not security.github_actions.present:
@@ -401,15 +424,48 @@ def display_security_automation(
     console.print(table)
 
 
+def display_workflow_actions(
+    workflow: WorkflowInfo,
+) -> None:
+    """
+    Affiche les actions détectées dans un workflow GitHub Actions.
+
+    Cette fonction distingue trois situations :
+
+    1. Le contenu YAML n'est pas disponible.
+    2. Le contenu YAML est disponible mais aucune action externe
+       n'a été détectée.
+    3. Une ou plusieurs actions externes ont été détectées.
+
+    Args:
+        workflow:
+            Workflow à afficher.
+    """
+
+    if not workflow.content_available:
+        console.print("      [yellow]Contenu YAML non disponible[/yellow]")
+        return
+
+    if not workflow.actions:
+        console.print("      [dim]Aucune action externe détectée[/dim]")
+        return
+
+    for action in workflow.actions:
+        console.print(f"      [dim]→ {action}[/dim]")
+
+
 def display_github_actions_workflows(
     security: SecurityAnalysis,
 ) -> None:
     """
-    Affiche la liste complète des workflows GitHub Actions.
+    Affiche les workflows GitHub Actions et leur contenu analysable.
+
+    Pour chaque workflow, GitRecon affiche son chemin puis les actions
+    externes détectées dans ses directives ``uses``.
 
     Args:
         security:
-            Analyse de sécurité contenant les workflows normalisés.
+            Analyse contenant les workflows normalisés.
     """
 
     if not security.github_actions.workflows:
@@ -420,6 +476,11 @@ def display_github_actions_workflows(
     for workflow in security.github_actions.workflows:
         console.print(f"  [green]✓[/green] {workflow.name}")
 
+        if workflow.path:
+            console.print(f"      [dim]{workflow.path}[/dim]")
+
+        display_workflow_actions(workflow)
+
 
 def display_warnings(
     analysis: RepositoryAnalysis,
@@ -428,8 +489,15 @@ def display_warnings(
     """
     Affiche les avertissements générés pendant le scan.
 
-    Les avertissements de l'analyse générale et de l'analyse de sécurité
-    sont regroupés afin d'éviter plusieurs sections distinctes.
+    Les avertissements provenant de l'analyse générale et de l'analyse
+    de sécurité sont regroupés dans une section unique.
+
+    Args:
+        analysis:
+            Analyse générale du dépôt.
+
+        security:
+            Analyse de sécurité du dépôt.
     """
 
     warnings = [

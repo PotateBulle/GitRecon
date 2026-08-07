@@ -26,6 +26,7 @@ from gitrecon.github.security import (
     get_code_of_conduct,
     get_contributing_guide,
     get_dependabot_configuration,
+    get_github_actions_workflow_contents,
     get_github_actions_workflows,
     get_license_file,
     get_security_policy,
@@ -74,8 +75,6 @@ def parse_repository_target(target: str) -> tuple[str, str]:
 
     cleaned_target = target.strip()
 
-    # Une cible commençant par HTTP ou HTTPS est interprétée comme
-    # une URL GitHub complète.
     if cleaned_target.startswith(("http://", "https://")):
         parsed_url = urlparse(cleaned_target)
 
@@ -94,8 +93,6 @@ def parse_repository_target(target: str) -> tuple[str, str]:
         repository = path_parts[1]
 
     else:
-        # Lorsque la cible n'est pas une URL, GitRecon attend le
-        # format simple owner/repository.
         path_parts = [part for part in cleaned_target.strip("/").split("/") if part]
 
         if len(path_parts) != 2:
@@ -106,8 +103,6 @@ def parse_repository_target(target: str) -> tuple[str, str]:
 
         owner, repository = path_parts
 
-    # Les URL de clonage Git peuvent se terminer par ".git".
-    # Cette extension ne fait pas partie du véritable nom du dépôt.
     repository = repository.removesuffix(".git")
 
     if not owner or not repository:
@@ -135,6 +130,9 @@ def scan(
     GitRecon récupère les métadonnées générales du dépôt ainsi que
     différents indicateurs relatifs à son activité, sa gouvernance,
     sa sécurité et ses automatisations GitHub Actions.
+
+    Depuis la V3.2, le contenu YAML des workflows peut également être
+    analysé afin d'identifier les actions réellement référencées.
     """
 
     owner, repository_name = parse_repository_target(target)
@@ -142,10 +140,7 @@ def scan(
     client = GitHubClient()
 
     try:
-        # ------------------------------------------------------------------
-        # Métadonnées générales du dépôt
-        # ------------------------------------------------------------------
-
+        # Métadonnées générales
         repository_data = get_repository(
             client=client,
             owner=owner,
@@ -158,14 +153,9 @@ def scan(
             repository=repository_name,
         )
 
-        # Cette liste contient les limitations non bloquantes rencontrées
-        # pendant la collecte générale.
         warnings: list[str] = []
 
-        # ------------------------------------------------------------------
         # Contributeurs
-        # ------------------------------------------------------------------
-
         try:
             contributors_data = get_contributors(
                 client=client,
@@ -176,8 +166,6 @@ def scan(
         except GitHubAPIError as exc:
             error_message = str(exc).lower()
 
-            # GitHub peut refuser d'énumérer les contributeurs de certains
-            # très grands dépôts lorsque leur historique est trop important.
             if "contributor list is too large" in error_message:
                 contributors_data = None
 
@@ -189,10 +177,7 @@ def scan(
             else:
                 raise
 
-        # ------------------------------------------------------------------
         # Branches et releases
-        # ------------------------------------------------------------------
-
         branches_data = get_branches(
             client=client,
             owner=owner,
@@ -205,10 +190,7 @@ def scan(
             repository=repository_name,
         )
 
-        # ------------------------------------------------------------------
-        # Informations de sécurité et de gouvernance
-        # ------------------------------------------------------------------
-
+        # Fichiers de sécurité et de gouvernance
         security_policy_data = get_security_policy(
             client=client,
             owner=owner,
@@ -239,16 +221,25 @@ def scan(
             repository=repository_name,
         )
 
+        # GitHub Actions
         workflows_data = get_github_actions_workflows(
             client=client,
             owner=owner,
             repository=repository_name,
         )
 
-        # ------------------------------------------------------------------
-        # Normalisation des données
-        # ------------------------------------------------------------------
+        # Récupération du contenu YAML de chacun des workflows.
+        #
+        # Les contenus sont indexés par chemin afin de pouvoir être
+        # associés aux métadonnées du workflow pendant la normalisation.
+        workflow_contents = get_github_actions_workflow_contents(
+            client=client,
+            owner=owner,
+            repository=repository_name,
+            workflows=workflows_data,
+        )
 
+        # Normalisation des données générales
         repository = RepositoryInfo.from_github(repository_data)
 
         analysis = build_repository_analysis(
@@ -259,6 +250,7 @@ def scan(
             warnings=warnings,
         )
 
+        # Analyse de sécurité
         security_analysis = build_security_analysis(
             security_policy=security_policy_data,
             license_file=license_data,
@@ -266,12 +258,10 @@ def scan(
             contributing_guide=contributing_guide_data,
             dependabot=dependabot_data,
             workflows=workflows_data,
+            workflow_contents=workflow_contents,
         )
 
-        # ------------------------------------------------------------------
-        # Affichage du rapport
-        # ------------------------------------------------------------------
-
+        # Affichage
         display_repository(
             repository=repository,
             analysis=analysis,
@@ -292,8 +282,8 @@ def scan(
         raise typer.Exit(code=1) from exc
 
     finally:
-        # Les connexions HTTP sont toujours fermées, même lorsque
-        # l'analyse se termine prématurément à cause d'une erreur.
+        # Le client HTTP est systématiquement fermé, que le scan
+        # se termine normalement ou qu'une erreur soit rencontrée.
         client.close()
 
 
