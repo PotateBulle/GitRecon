@@ -1,13 +1,14 @@
 """
 Interface en ligne de commande de GitRecon.
 
-Ce module constitue le point d'entrée principal de l'application.
-Il interprète les commandes saisies par l'utilisateur et coordonne
-les différents composants nécessaires à leur exécution.
+Ce module définit les commandes exposées à l'utilisateur et orchestre
+la collecte, l'analyse et l'affichage des informations d'un dépôt GitHub.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Annotated
 from urllib.parse import urlparse
 
 import typer
@@ -31,12 +32,18 @@ from gitrecon.github.security import (
     get_license_file,
     get_security_policy,
 )
+from gitrecon.models.analysis import RepositoryAnalysis
 from gitrecon.models.repository import RepositoryInfo
-from gitrecon.output.terminal import console, display_repository
+from gitrecon.models.security import SecurityAnalysis
+from gitrecon.output.json import write_json_report
+from gitrecon.output.terminal import (
+    console,
+    display_repository,
+)
 
 app = typer.Typer(
     name="gitrecon",
-    help="GitHub Repository Intelligence & Security Scanner.",
+    help=("GitRecon collecte et analyse les informations publiques d'un dépôt GitHub."),
     no_args_is_help=True,
 )
 
@@ -44,246 +51,315 @@ app = typer.Typer(
 @app.callback()
 def main() -> None:
     """
-    GitRecon — GitHub Repository Intelligence & Security Scanner.
+    Interface principale de GitRecon.
     """
 
 
-def parse_repository_target(target: str) -> tuple[str, str]:
+def parse_repository_target(
+    target: str,
+) -> tuple[str, str]:
     """
-    Extrait le propriétaire et le nom d'un dépôt GitHub.
+    Analyse une cible GitHub et retourne le propriétaire et le dépôt.
 
-    Les formats suivants sont acceptés :
+    Formats acceptés :
 
         owner/repository
-
         https://github.com/owner/repository
-
         https://github.com/owner/repository.git
-
-    Args:
-        target:
-            Cible GitHub fournie par l'utilisateur.
-
-    Returns:
-        Tuple contenant respectivement le propriétaire et le nom
-        du dépôt.
-
-    Raises:
-        typer.BadParameter:
-            Lorsque la cible fournie n'est pas correctement formée.
     """
 
-    cleaned_target = target.strip()
+    normalized_target = target.strip()
 
-    if cleaned_target.startswith(("http://", "https://")):
-        parsed_url = urlparse(cleaned_target)
+    if not normalized_target:
+        raise ValueError("La cible du dépôt ne peut pas être vide.")
 
-        if parsed_url.hostname not in {
+    # URL GitHub
+    if normalized_target.startswith(
+        (
+            "http://",
+            "https://",
+        )
+    ):
+        parsed = urlparse(normalized_target)
+
+        if parsed.hostname not in {
             "github.com",
             "www.github.com",
         }:
-            raise typer.BadParameter("L'URL fournie doit pointer vers github.com.")
+            raise ValueError("L'URL doit pointer vers github.com.")
 
-        path_parts = [part for part in parsed_url.path.strip("/").split("/") if part]
+        parts = [part for part in parsed.path.split("/") if part]
 
-        if len(path_parts) < 2:
-            raise typer.BadParameter("L'URL GitHub ne contient pas de dépôt valide.")
-
-        owner = path_parts[0]
-        repository = path_parts[1]
-
+    # owner/repository
     else:
-        path_parts = [part for part in cleaned_target.strip("/").split("/") if part]
+        parts = [part for part in normalized_target.split("/") if part]
 
-        if len(path_parts) != 2:
-            raise typer.BadParameter(
-                "Le dépôt doit être indiqué sous la forme "
-                "owner/repository ou avec son URL GitHub complète."
-            )
+    if len(parts) != 2:
+        raise ValueError(
+            "La cible doit utiliser le format owner/repository "
+            "ou une URL GitHub complète."
+        )
 
-        owner, repository = path_parts
+    owner, repository = parts
 
     repository = repository.removesuffix(".git")
 
+    owner = owner.strip()
+    repository = repository.strip()
+
     if not owner or not repository:
-        raise typer.BadParameter(
-            "Le propriétaire et le nom du dépôt sont obligatoires."
-        )
+        raise ValueError("Le propriétaire et le dépôt doivent être renseignés.")
 
     return owner, repository
 
 
+def collect_repository_data(
+    client: GitHubClient,
+    owner: str,
+    repository: str,
+) -> tuple[
+    RepositoryInfo,
+    RepositoryAnalysis,
+    SecurityAnalysis,
+]:
+    """
+    Collecte et analyse les informations nécessaires au rapport.
+    """
+
+    warnings: list[str] = []
+
+    # Dépôt
+    repository_data = get_repository(
+        client,
+        owner,
+        repository,
+    )
+
+    repository_info = RepositoryInfo.from_github(repository_data)
+
+    # Langages
+    languages = get_languages(
+        client,
+        owner,
+        repository,
+    )
+
+    # Contributeurs
+    contributors: list[dict] | None
+
+    try:
+        contributors = get_contributors(
+            client,
+            owner,
+            repository,
+        )
+
+    except GitHubAPIError as exc:
+        message = str(exc).lower()
+
+        if exc.status_code == 403 and "contributor list is too large" in message:
+            contributors = None
+
+            warnings.append(
+                "La liste des contributeurs est trop volumineuse "
+                "pour être retournée par l'API GitHub."
+            )
+
+        else:
+            raise
+
+    # Branches
+    branches = get_branches(
+        client,
+        owner,
+        repository,
+    )
+
+    # Releases
+    releases = get_releases(
+        client,
+        owner,
+        repository,
+    )
+
+    analysis = build_repository_analysis(
+        languages=languages,
+        contributors=contributors,
+        branches=branches,
+        releases=releases,
+        warnings=warnings,
+    )
+
+    # Sécurité
+    security_policy = get_security_policy(
+        client,
+        owner,
+        repository,
+    )
+
+    license_file = get_license_file(
+        client,
+        owner,
+        repository,
+    )
+
+    code_of_conduct = get_code_of_conduct(
+        client,
+        owner,
+        repository,
+    )
+
+    contributing_guide = get_contributing_guide(
+        client,
+        owner,
+        repository,
+    )
+
+    dependabot = get_dependabot_configuration(
+        client,
+        owner,
+        repository,
+    )
+
+    # GitHub Actions
+    workflows = get_github_actions_workflows(
+        client,
+        owner,
+        repository,
+    )
+
+    workflow_contents = get_github_actions_workflow_contents(
+        client,
+        owner,
+        repository,
+        workflows,
+    )
+
+    security = build_security_analysis(
+        security_policy=security_policy,
+        license_file=license_file,
+        code_of_conduct=code_of_conduct,
+        contributing_guide=contributing_guide,
+        dependabot=dependabot,
+        workflows=workflows,
+        workflow_contents=workflow_contents,
+    )
+
+    return (
+        repository_info,
+        analysis,
+        security,
+    )
+
+
 @app.command()
 def scan(
-    target: str = typer.Argument(
-        ...,
-        help=(
-            "Dépôt GitHub à analyser. Formats acceptés : "
-            "owner/repository ou URL GitHub complète."
+    target: Annotated[
+        str,
+        typer.Argument(
+            help=("Dépôt GitHub à analyser : owner/repository ou URL GitHub complète."),
         ),
-        metavar="REPOSITORY",
-    ),
+    ],
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=("Exporte le rapport au format JSON dans le dossier reports."),
+        ),
+    ] = False,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            help=(
+                "Nom du fichier JSON à créer dans reports. "
+                "Cette option nécessite --json."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """
-    Analyse un dépôt GitHub et affiche les informations collectées.
+    Analyse un dépôt GitHub.
 
-    GitRecon récupère les métadonnées générales du dépôt ainsi que
-    différents indicateurs relatifs à son activité, sa gouvernance,
-    sa sécurité et ses automatisations GitHub Actions.
+    Sans option particulière, GitRecon affiche le rapport dans le terminal.
 
-    Depuis la V3.2, le contenu YAML des workflows peut également être
-    analysé afin d'identifier les actions réellement référencées.
+    Avec ``--json``, GitRecon crée automatiquement le dossier ``reports``
+    et y sauvegarde le rapport JSON.
     """
 
-    owner, repository_name = parse_repository_target(target)
+    if output is not None and not json_output:
+        raise typer.BadParameter(
+            "--output nécessite l'option --json.",
+            param_hint="--output",
+        )
+
+    try:
+        owner, repository = parse_repository_target(target)
+
+    except ValueError as exc:
+        console.print(f"[bold red]Erreur :[/bold red] {exc}")
+
+        raise typer.Exit(code=2) from exc
 
     client = GitHubClient()
 
     try:
-        # Métadonnées générales
-        repository_data = get_repository(
+        (
+            repository_info,
+            analysis,
+            security,
+        ) = collect_repository_data(
             client=client,
             owner=owner,
-            repository=repository_name,
+            repository=repository,
         )
 
-        languages_data = get_languages(
-            client=client,
-            owner=owner,
-            repository=repository_name,
-        )
-
-        warnings: list[str] = []
-
-        # Contributeurs
-        try:
-            contributors_data = get_contributors(
-                client=client,
-                owner=owner,
-                repository=repository_name,
-            )
-
-        except GitHubAPIError as exc:
-            error_message = str(exc).lower()
-
-            if "contributor list is too large" in error_message:
-                contributors_data = None
-
-                warnings.append(
-                    "GitHub ne permet pas d'énumérer les contributeurs "
-                    "de ce dépôt, car son historique est trop volumineux."
+        # Export JSON
+        if json_output:
+            try:
+                output_path = write_json_report(
+                    repository=repository_info,
+                    analysis=analysis,
+                    security=security,
+                    filename=output,
                 )
 
-            else:
-                raise
+            except (OSError, ValueError) as exc:
+                console.print("\n[bold red]Erreur export JSON[/bold red]")
 
-        # Branches et releases
-        branches_data = get_branches(
-            client=client,
-            owner=owner,
-            repository=repository_name,
-        )
+                console.print(str(exc))
 
-        releases_data = get_releases(
-            client=client,
-            owner=owner,
-            repository=repository_name,
-        )
+                raise typer.Exit(code=1) from exc
 
-        # Fichiers de sécurité et de gouvernance
-        security_policy_data = get_security_policy(
-            client=client,
-            owner=owner,
-            repository=repository_name,
-        )
+            console.print(f"\n[green]Rapport JSON créé :[/green] {output_path}")
 
-        license_data = get_license_file(
-            client=client,
-            owner=owner,
-            repository=repository_name,
-        )
-
-        code_of_conduct_data = get_code_of_conduct(
-            client=client,
-            owner=owner,
-            repository=repository_name,
-        )
-
-        contributing_guide_data = get_contributing_guide(
-            client=client,
-            owner=owner,
-            repository=repository_name,
-        )
-
-        dependabot_data = get_dependabot_configuration(
-            client=client,
-            owner=owner,
-            repository=repository_name,
-        )
-
-        # GitHub Actions
-        workflows_data = get_github_actions_workflows(
-            client=client,
-            owner=owner,
-            repository=repository_name,
-        )
-
-        # Récupération du contenu YAML de chacun des workflows.
-        #
-        # Les contenus sont indexés par chemin afin de pouvoir être
-        # associés aux métadonnées du workflow pendant la normalisation.
-        workflow_contents = get_github_actions_workflow_contents(
-            client=client,
-            owner=owner,
-            repository=repository_name,
-            workflows=workflows_data,
-        )
-
-        # Normalisation des données générales
-        repository = RepositoryInfo.from_github(repository_data)
-
-        analysis = build_repository_analysis(
-            languages=languages_data,
-            contributors=contributors_data,
-            branches=branches_data,
-            releases=releases_data,
-            warnings=warnings,
-        )
-
-        # Analyse de sécurité
-        security_analysis = build_security_analysis(
-            security_policy=security_policy_data,
-            license_file=license_data,
-            code_of_conduct=code_of_conduct_data,
-            contributing_guide=contributing_guide_data,
-            dependabot=dependabot_data,
-            workflows=workflows_data,
-            workflow_contents=workflow_contents,
-        )
+            return
 
         # Affichage
         display_repository(
-            repository=repository,
+            repository=repository_info,
             analysis=analysis,
-            security=security_analysis,
+            security=security,
         )
 
     except GitHubAPIError as exc:
-        console.print(f"[bold red]Erreur GitHub :[/bold red] {exc}")
+        console.print("\n[bold red]Erreur GitHub API[/bold red]")
+
+        console.print(str(exc))
 
         raise typer.Exit(code=1) from exc
 
     except KeyError as exc:
+        console.print("\n[bold red]Erreur de données[/bold red]")
+
         console.print(
-            "[bold red]Erreur :[/bold red] "
-            f"donnée GitHub manquante ou inattendue : {exc}"
+            f"Une information attendue est absente de la réponse GitHub : {exc}"
         )
 
         raise typer.Exit(code=1) from exc
 
     finally:
-        # Le client HTTP est systématiquement fermé, que le scan
-        # se termine normalement ou qu'une erreur soit rencontrée.
         client.close()
 
 

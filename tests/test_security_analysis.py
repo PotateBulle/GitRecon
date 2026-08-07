@@ -52,10 +52,7 @@ def get_rule_ids(
     Retourne les identifiants des findings d'un workflow.
     """
 
-    return [
-        finding.rule_id
-        for finding in workflow.findings
-    ]
+    return [finding.rule_id for finding in workflow.findings]
 
 
 def get_findings_by_rule(
@@ -66,11 +63,7 @@ def get_findings_by_rule(
     Retourne les findings correspondant à une règle.
     """
 
-    return [
-        finding
-        for finding in workflow.findings
-        if finding.rule_id == rule_id
-    ]
+    return [finding for finding in workflow.findings if finding.rule_id == rule_id]
 
 
 # YAML
@@ -188,18 +181,14 @@ def test_extract_actions_ignores_docker_references() -> None:
 
 
 def test_split_action_reference() -> None:
-    resource, reference = split_action_reference(
-        "actions/checkout@v4"
-    )
+    resource, reference = split_action_reference("actions/checkout@v4")
 
     assert resource == "actions/checkout"
     assert reference == "v4"
 
 
 def test_split_action_reference_without_version() -> None:
-    resource, reference = split_action_reference(
-        "actions/checkout"
-    )
+    resource, reference = split_action_reference("actions/checkout")
 
     assert resource == "actions/checkout"
     assert reference is None
@@ -258,10 +247,7 @@ jobs:
 
     assert permissions[0].scope == "contents"
     assert permissions[0].access == "read"
-    assert (
-        permissions[0].level
-        == WorkflowPermissionLevel.WORKFLOW
-    )
+    assert permissions[0].level == WorkflowPermissionLevel.WORKFLOW
 
     assert permissions[1].scope == "issues"
     assert permissions[1].access == "write"
@@ -285,10 +271,7 @@ jobs:
     assert len(permissions) == 2
 
     for permission in permissions:
-        assert (
-            permission.level
-            == WorkflowPermissionLevel.JOB
-        )
+        assert permission.level == WorkflowPermissionLevel.JOB
         assert permission.job == "publish"
 
 
@@ -313,10 +296,7 @@ jobs:
 
     assert permission.scope == "*"
     assert permission.access == "write-all"
-    assert (
-        permission.level
-        == WorkflowPermissionLevel.WORKFLOW
-    )
+    assert permission.level == WorkflowPermissionLevel.WORKFLOW
 
 
 def test_permissions_can_exist_at_workflow_and_job_level() -> None:
@@ -338,15 +318,9 @@ jobs:
 
     assert len(permissions) == 2
 
-    assert (
-        permissions[0].level
-        == WorkflowPermissionLevel.WORKFLOW
-    )
+    assert permissions[0].level == WorkflowPermissionLevel.WORKFLOW
 
-    assert (
-        permissions[1].level
-        == WorkflowPermissionLevel.JOB
-    )
+    assert permissions[1].level == WorkflowPermissionLevel.JOB
 
 
 def test_invalid_permission_access_is_ignored() -> None:
@@ -389,10 +363,7 @@ jobs:
     )
 
     assert len(findings) == 1
-    assert (
-        findings[0].severity
-        == FindingSeverity.HIGH
-    )
+    assert findings[0].severity == FindingSeverity.HIGH
     assert findings[0].evidence == "example/action@main"
 
 
@@ -428,10 +399,7 @@ jobs:
     )
 
     assert len(findings) == 1
-    assert (
-        findings[0].severity
-        == FindingSeverity.MEDIUM
-    )
+    assert findings[0].severity == FindingSeverity.MEDIUM
 
 
 def test_full_sha_does_not_trigger_unpinned_rule() -> None:
@@ -517,10 +485,7 @@ jobs:
     )
 
     assert len(findings) == 1
-    assert (
-        findings[0].severity
-        == FindingSeverity.INFO
-    )
+    assert findings[0].severity == FindingSeverity.INFO
 
 
 def test_github_first_party_action_is_not_third_party() -> None:
@@ -556,10 +521,7 @@ jobs:
     )
 
     assert len(findings) == 1
-    assert (
-        findings[0].severity
-        == FindingSeverity.HIGH
-    )
+    assert findings[0].severity == FindingSeverity.HIGH
 
 
 def test_detect_job_write_all() -> None:
@@ -601,10 +563,7 @@ jobs:
     )
 
     assert len(findings) == 1
-    assert (
-        findings[0].severity
-        == FindingSeverity.MEDIUM
-    )
+    assert findings[0].severity == FindingSeverity.MEDIUM
 
 
 def test_push_event_does_not_trigger_pull_request_target() -> None:
@@ -643,10 +602,7 @@ jobs:
     )
 
     assert len(findings) == 1
-    assert (
-        findings[0].severity
-        == FindingSeverity.MEDIUM
-    )
+    assert findings[0].severity == FindingSeverity.MEDIUM
 
 
 def test_contents_read_does_not_trigger_rule() -> None:
@@ -677,10 +633,7 @@ permissions:
     )
 
     assert len(findings) == 1
-    assert (
-        findings[0].severity
-        == FindingSeverity.LOW
-    )
+    assert findings[0].severity == FindingSeverity.LOW
 
 
 # GH-ACTIONS-008
@@ -700,10 +653,7 @@ permissions:
     )
 
     assert len(findings) == 1
-    assert (
-        findings[0].severity
-        == FindingSeverity.LOW
-    )
+    assert findings[0].severity == FindingSeverity.LOW
 
 
 # GH-ACTIONS-009
@@ -723,10 +673,7 @@ permissions:
     )
 
     assert len(findings) == 1
-    assert (
-        findings[0].severity
-        == FindingSeverity.MEDIUM
-    )
+    assert findings[0].severity == FindingSeverity.MEDIUM
 
 
 # GH-ACTIONS-010
@@ -746,10 +693,7 @@ permissions:
     )
 
     assert len(findings) == 1
-    assert (
-        findings[0].severity
-        == FindingSeverity.LOW
-    )
+    assert findings[0].severity == FindingSeverity.LOW
 
 
 # GH-ACTIONS-011
@@ -772,10 +716,7 @@ permissions:
     )
 
     assert len(findings) == 1
-    assert (
-        findings[0].severity
-        == FindingSeverity.HIGH
-    )
+    assert findings[0].severity == FindingSeverity.HIGH
 
 
 def test_pull_request_target_without_write_permission_does_not_trigger_011() -> None:
@@ -830,10 +771,7 @@ permissions: write-all
     )
 
     assert len(findings) == 1
-    assert (
-        findings[0].severity
-        == FindingSeverity.HIGH
-    )
+    assert findings[0].severity == FindingSeverity.HIGH
 
 
 # Robustesse
@@ -860,10 +798,7 @@ permissions:
         "GH-ACTIONS-011",
     }
 
-    assert not (
-        permission_rules
-        & set(get_rule_ids(workflow))
-    )
+    assert not (permission_rules & set(get_rule_ids(workflow)))
 
 
 def test_local_action_generates_no_reference_findings() -> None:

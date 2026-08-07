@@ -38,3 +38,6 @@ pip-wheel-metadata/
 *.tmp
 *.temp
 *.log
+
+# Fichiers Rapport
+reports/
