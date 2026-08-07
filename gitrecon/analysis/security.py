@@ -39,6 +39,14 @@ FIRST_PARTY_ACTION_OWNERS = {
     "github",
 }
 
+VALID_PERMISSION_ACCESS = {
+    "read",
+    "write",
+    "none",
+    "read-all",
+    "write-all",
+}
+
 
 def build_file_status(
     result: tuple[bool, str | None],
@@ -65,6 +73,12 @@ def load_workflow_yaml(
         Document YAML sous forme de dictionnaire ou ``None`` lorsque
         le contenu ne peut pas être interprété.
     """
+
+    if not isinstance(content, str):
+        return None
+
+    if not content.strip():
+        return None
 
     try:
         document = yaml.safe_load(content)
@@ -121,6 +135,16 @@ def extract_uses_from_yaml(
     return extract_uses_from_document(document)
 
 
+def normalize_action_reference(
+    value: str,
+) -> str:
+    """
+    Normalise une référence ``uses``.
+    """
+
+    return value.strip()
+
+
 def normalize_action_name(
     value: str,
 ) -> str:
@@ -136,7 +160,9 @@ def normalize_action_name(
         actions/checkout
     """
 
-    return value.split("@", maxsplit=1)[0].strip()
+    normalized = normalize_action_reference(value)
+
+    return normalized.rsplit("@", maxsplit=1)[0].strip()
 
 
 def is_local_action(
@@ -146,7 +172,7 @@ def is_local_action(
     Indique si une référence correspond à une action locale.
     """
 
-    return value.startswith("./")
+    return normalize_action_reference(value).startswith("./")
 
 
 def is_docker_action(
@@ -156,7 +182,7 @@ def is_docker_action(
     Indique si une référence correspond directement à une image Docker.
     """
 
-    return value.startswith("docker://")
+    return normalize_action_reference(value).lower().startswith("docker://")
 
 
 def extract_actions(
@@ -169,13 +195,21 @@ def extract_actions(
     actions: list[str] = []
 
     for value in uses:
-        if is_local_action(value):
+        if not isinstance(value, str):
             continue
 
-        if is_docker_action(value):
+        normalized = normalize_action_reference(value)
+
+        if not normalized:
             continue
 
-        action = normalize_action_name(value)
+        if is_local_action(normalized):
+            continue
+
+        if is_docker_action(normalized):
+            continue
+
+        action = normalize_action_name(normalized)
 
         if action and action not in actions:
             actions.append(action)
@@ -190,12 +224,20 @@ def split_action_reference(
     Sépare une référence GitHub Actions de sa version.
     """
 
-    if "@" not in value:
-        return value.strip(), None
+    normalized = normalize_action_reference(value)
 
-    resource, reference = value.rsplit("@", maxsplit=1)
+    if "@" not in normalized:
+        return normalized, None
 
-    return resource.strip(), reference.strip()
+    resource, reference = normalized.rsplit("@", maxsplit=1)
+
+    resource = resource.strip()
+    reference = reference.strip()
+
+    if not reference:
+        return resource, None
+
+    return resource, reference
 
 
 def is_full_commit_sha(
@@ -205,7 +247,10 @@ def is_full_commit_sha(
     Vérifie si une référence correspond à un SHA Git complet.
     """
 
-    return bool(FULL_COMMIT_SHA_PATTERN.fullmatch(reference))
+    if not isinstance(reference, str):
+        return False
+
+    return bool(FULL_COMMIT_SHA_PATTERN.fullmatch(reference.strip()))
 
 
 def get_action_owner(
@@ -215,12 +260,22 @@ def get_action_owner(
     Extrait le propriétaire d'une action ou d'un workflow réutilisable.
     """
 
-    parts = resource.split("/")
+    normalized = resource.strip().strip("/")
+
+    if not normalized:
+        return None
+
+    parts = normalized.split("/")
 
     if len(parts) < 2:
         return None
 
-    return parts[0].lower()
+    owner = parts[0].strip().lower()
+
+    if not owner:
+        return None
+
+    return owner
 
 
 def normalize_permission_access(
@@ -235,7 +290,7 @@ def normalize_permission_access(
 
     normalized = value.strip().lower()
 
-    if not normalized:
+    if normalized not in VALID_PERMISSION_ACCESS:
         return None
 
     return normalized
@@ -248,18 +303,6 @@ def extract_permission_block(
 ) -> list[WorkflowPermission]:
     """
     Extrait les permissions d'un bloc ``permissions``.
-
-    GitHub accepte notamment :
-
-        permissions: read-all
-
-        permissions: write-all
-
-    ou :
-
-        permissions:
-          contents: read
-          issues: write
     """
 
     permissions: list[WorkflowPermission] = []
@@ -267,7 +310,10 @@ def extract_permission_block(
     if isinstance(value, str):
         access = normalize_permission_access(value)
 
-        if access is None:
+        if access not in {
+            "read-all",
+            "write-all",
+        }:
             return []
 
         permissions.append(
@@ -288,14 +334,23 @@ def extract_permission_block(
         if not isinstance(scope, str):
             continue
 
+        normalized_scope = scope.strip().lower()
+
+        if not normalized_scope:
+            continue
+
         access = normalize_permission_access(access_value)
 
-        if access is None:
+        if access not in {
+            "read",
+            "write",
+            "none",
+        }:
             continue
 
         permissions.append(
             WorkflowPermission(
-                scope=scope.strip().lower(),
+                scope=normalized_scope,
                 access=access,
                 level=level,
                 job=job,
@@ -310,9 +365,6 @@ def extract_workflow_permissions(
 ) -> list[WorkflowPermission]:
     """
     Extrait les permissions globales et celles définies par job.
-
-    Returns:
-        Permissions détectées dans le workflow.
     """
 
     permissions: list[WorkflowPermission] = []
@@ -336,6 +388,11 @@ def extract_workflow_permissions(
         if not isinstance(job_name, str):
             continue
 
+        normalized_job_name = job_name.strip()
+
+        if not normalized_job_name:
+            continue
+
         if not isinstance(job_data, dict):
             continue
 
@@ -346,7 +403,7 @@ def extract_workflow_permissions(
             extract_permission_block(
                 value=job_data["permissions"],
                 level=WorkflowPermissionLevel.JOB,
-                job=job_name,
+                job=normalized_job_name,
             )
         )
 
@@ -366,6 +423,44 @@ def format_permission_evidence(
         return f"{value} (job: {permission.job})"
 
     return value
+
+
+def deduplicate_findings(
+    findings: list[SecurityFinding],
+) -> list[SecurityFinding]:
+    """
+    Supprime les findings identiques.
+
+    Deux findings sont considérés comme identiques lorsqu'ils partagent
+    la même règle, le même workflow, le même chemin et la même preuve.
+    """
+
+    unique_findings: list[SecurityFinding] = []
+
+    seen: set[
+        tuple[
+            str,
+            str | None,
+            str | None,
+            str | None,
+        ]
+    ] = set()
+
+    for finding in findings:
+        key = (
+            finding.rule_id,
+            finding.workflow,
+            finding.path,
+            finding.evidence,
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        unique_findings.append(finding)
+
+    return unique_findings
 
 
 def build_mutable_reference_findings(
@@ -437,9 +532,33 @@ def build_unpinned_action_findings(
         if is_docker_action(value):
             continue
 
-        _, reference = split_action_reference(value)
+        resource, reference = split_action_reference(value)
 
+        if not resource:
+            continue
+
+        # Référence absente
         if reference is None:
+            findings.append(
+                SecurityFinding(
+                    rule_id="GH-ACTIONS-002",
+                    title="Action non épinglée sur un SHA",
+                    description=(
+                        "La dépendance GitHub Actions ne contient "
+                        "aucune référence explicite et n'est donc pas "
+                        "épinglée sur un commit immuable."
+                    ),
+                    severity=FindingSeverity.MEDIUM,
+                    workflow=workflow_name,
+                    path=workflow_path,
+                    evidence=value,
+                    recommendation=(
+                        "Utiliser le SHA complet d'un commit de confiance "
+                        "pour rendre la référence immuable."
+                    ),
+                )
+            )
+
             continue
 
         # Branche mutable
@@ -481,9 +600,6 @@ def build_third_party_action_findings(
 ) -> list[SecurityFinding]:
     """
     Identifie les actions provenant d'un propriétaire tiers.
-
-    Cette détection est informative et représente une dépendance
-    supplémentaire dans la chaîne de confiance du workflow.
     """
 
     findings: list[SecurityFinding] = []
@@ -528,17 +644,17 @@ def build_third_party_action_findings(
     return findings
 
 
-def contains_write_all(
+def get_write_all_permissions(
     permissions: list[WorkflowPermission],
 ) -> list[WorkflowPermission]:
     """
-    Retourne les déclarations ``permissions: write-all`` détectées.
+    Retourne les déclarations ``permissions: write-all``.
     """
 
     return [
         permission
         for permission in permissions
-        if permission.scope == "*" and permission.access == "write-all"
+        if (permission.scope == "*" and permission.access == "write-all")
     ]
 
 
@@ -553,7 +669,7 @@ def build_write_all_findings(
 
     findings: list[SecurityFinding] = []
 
-    for permission in contains_write_all(permissions):
+    for permission in get_write_all_permissions(permissions):
         if permission.level == WorkflowPermissionLevel.JOB and permission.job:
             evidence = f"permissions: write-all (job: {permission.job})"
         else:
@@ -581,29 +697,47 @@ def build_write_all_findings(
     return findings
 
 
+def get_workflow_trigger(
+    document: dict[str, Any],
+) -> Any:
+    """
+    Retourne la configuration de déclenchement du workflow.
+
+    PyYAML peut interpréter la clé YAML ``on`` comme le booléen ``True``.
+    """
+
+    if "on" in document:
+        return document["on"]
+
+    if True in document:
+        return document[True]
+
+    return None
+
+
 def uses_pull_request_target(
     document: dict[str, Any],
 ) -> bool:
     """
     Vérifie si le workflow utilise l'événement pull_request_target.
-
-    PyYAML peut interpréter la clé YAML ``on`` comme un booléen dans
-    certains cas. Cette représentation est également prise en charge.
     """
 
-    trigger = document.get("on")
-
-    if trigger is None:
-        trigger = document.get(True)
+    trigger = get_workflow_trigger(document)
 
     if isinstance(trigger, str):
-        return trigger == "pull_request_target"
+        return trigger.strip().lower() == "pull_request_target"
 
     if isinstance(trigger, list):
-        return "pull_request_target" in trigger
+        return any(
+            isinstance(item, str) and item.strip().lower() == "pull_request_target"
+            for item in trigger
+        )
 
     if isinstance(trigger, dict):
-        return "pull_request_target" in trigger
+        return any(
+            isinstance(key, str) and key.strip().lower() == "pull_request_target"
+            for key in trigger
+        )
 
     return False
 
@@ -679,10 +813,7 @@ def build_contents_write_findings(
     findings: list[SecurityFinding] = []
 
     for permission in permissions:
-        if permission.scope != "contents":
-            continue
-
-        if permission.access != "write":
+        if permission.scope != "contents" or permission.access != "write":
             continue
 
         findings.append(
@@ -720,10 +851,7 @@ def build_pull_requests_write_findings(
     findings: list[SecurityFinding] = []
 
     for permission in permissions:
-        if permission.scope != "pull-requests":
-            continue
-
-        if permission.access != "write":
+        if permission.scope != "pull-requests" or permission.access != "write":
             continue
 
         findings.append(
@@ -761,10 +889,7 @@ def build_issues_write_findings(
     findings: list[SecurityFinding] = []
 
     for permission in permissions:
-        if permission.scope != "issues":
-            continue
-
-        if permission.access != "write":
+        if permission.scope != "issues" or permission.access != "write":
             continue
 
         findings.append(
@@ -798,10 +923,7 @@ def build_id_token_write_findings(
     findings: list[SecurityFinding] = []
 
     for permission in permissions:
-        if permission.scope != "id-token":
-            continue
-
-        if permission.access != "write":
+        if permission.scope != "id-token" or permission.access != "write":
             continue
 
         findings.append(
@@ -841,10 +963,7 @@ def build_packages_write_findings(
     findings: list[SecurityFinding] = []
 
     for permission in permissions:
-        if permission.scope != "packages":
-            continue
-
-        if permission.access != "write":
+        if permission.scope != "packages" or permission.access != "write":
             continue
 
         findings.append(
@@ -875,7 +994,7 @@ def build_permission_findings(
     permissions: list[WorkflowPermission],
 ) -> list[SecurityFinding]:
     """
-    Exécute les règles V3.4 liées aux permissions GitHub Actions.
+    Exécute les règles liées aux permissions GitHub Actions.
     """
 
     findings: list[SecurityFinding] = []
@@ -921,6 +1040,82 @@ def build_permission_findings(
     )
 
     return findings
+
+
+def permission_grants_write(
+    permission: WorkflowPermission,
+) -> bool:
+    """
+    Indique si une permission accorde un accès en écriture.
+    """
+
+    return permission.access in {
+        "write",
+        "write-all",
+    }
+
+
+def get_write_permissions(
+    permissions: list[WorkflowPermission],
+) -> list[WorkflowPermission]:
+    """
+    Retourne les permissions accordant un accès en écriture.
+    """
+
+    return [
+        permission for permission in permissions if permission_grants_write(permission)
+    ]
+
+
+def build_privileged_pull_request_findings(
+    workflow_name: str,
+    workflow_path: str | None,
+    document: dict[str, Any],
+    permissions: list[WorkflowPermission],
+) -> list[SecurityFinding]:
+    """
+    Détecte la combinaison pull_request_target et permissions d'écriture.
+
+    Cette combinaison augmente le niveau de confiance nécessaire pour
+    le workflow car pull_request_target s'exécute dans le contexte
+    privilégié du dépôt cible.
+    """
+
+    if not uses_pull_request_target(document):
+        return []
+
+    write_permissions = get_write_permissions(permissions)
+
+    if not write_permissions:
+        return []
+
+    evidence_values = [
+        format_permission_evidence(permission) for permission in write_permissions
+    ]
+
+    evidence = "pull_request_target + " + ", ".join(evidence_values)
+
+    return [
+        SecurityFinding(
+            rule_id="GH-ACTIONS-011",
+            title=("pull_request_target avec permissions d'écriture"),
+            description=(
+                "Le workflow combine pull_request_target avec une ou "
+                "plusieurs permissions d'écriture. Cette configuration "
+                "peut augmenter l'impact d'une exécution non fiable dans "
+                "le contexte privilégié du dépôt cible."
+            ),
+            severity=FindingSeverity.HIGH,
+            workflow=workflow_name,
+            path=workflow_path,
+            evidence=evidence,
+            recommendation=(
+                "Réduire les permissions au minimum nécessaire et éviter "
+                "d'exécuter du code provenant directement d'une pull "
+                "request non fiable dans ce contexte."
+            ),
+        )
+    ]
 
 
 def analyze_workflow_findings(
@@ -987,7 +1182,17 @@ def analyze_workflow_findings(
         )
     )
 
-    return findings
+    # Contexte privilégié
+    findings.extend(
+        build_privileged_pull_request_findings(
+            workflow_name=workflow_name,
+            workflow_path=workflow_path,
+            document=document,
+            permissions=permissions,
+        )
+    )
+
+    return deduplicate_findings(findings)
 
 
 def normalize_workflow(
@@ -996,10 +1201,6 @@ def normalize_workflow(
 ) -> WorkflowInfo:
     """
     Transforme un workflow brut GitHub en modèle interne.
-
-    Lorsque le contenu YAML est disponible, GitRecon extrait les
-    directives ``uses``, les permissions et exécute les contrôles
-    de sécurité.
     """
 
     name = workflow.get("name")
@@ -1010,17 +1211,22 @@ def normalize_workflow(
         name.strip() if isinstance(name, str) and name.strip() else "Workflow sans nom"
     )
 
-    workflow_path = path if isinstance(path, str) else None
+    workflow_path = path.strip() if isinstance(path, str) and path.strip() else None
+
+    workflow_state = state.strip() if isinstance(state, str) and state.strip() else None
 
     uses: list[str] = []
     permissions: list[WorkflowPermission] = []
     findings: list[SecurityFinding] = []
 
-    if content is not None:
+    content_available = isinstance(content, str) and bool(content.strip())
+
+    if content_available:
         document = load_workflow_yaml(content)
 
         if document is not None:
             uses = extract_uses_from_document(document)
+
             permissions = extract_workflow_permissions(document)
 
             findings = analyze_workflow_findings(
@@ -1036,8 +1242,8 @@ def normalize_workflow(
     return WorkflowInfo(
         name=workflow_name,
         path=workflow_path,
-        state=state if isinstance(state, str) else None,
-        content_available=content is not None,
+        state=workflow_state,
+        content_available=content_available,
         actions=actions,
         uses=uses,
         permissions=permissions,
@@ -1058,6 +1264,9 @@ def build_github_actions_status(
     normalized_workflows: list[WorkflowInfo] = []
 
     for workflow in workflows:
+        if not isinstance(workflow, dict):
+            continue
+
         path = workflow.get("path")
 
         content = contents.get(path) if isinstance(path, str) else None
@@ -1091,7 +1300,11 @@ def workflow_matches(
         )
     ).lower()
 
-    return any(keyword.lower() in searchable_content for keyword in keywords)
+    return any(
+        keyword.lower() in searchable_content
+        for keyword in keywords
+        if isinstance(keyword, str) and keyword
+    )
 
 
 def detect_workflows(
@@ -1125,7 +1338,14 @@ def workflow_uses_action(
     Vérifie si un workflow utilise une action donnée.
     """
 
-    normalized_prefixes = tuple(prefix.lower() for prefix in action_prefixes)
+    normalized_prefixes = tuple(
+        prefix.lower()
+        for prefix in action_prefixes
+        if isinstance(prefix, str) and prefix
+    )
+
+    if not normalized_prefixes:
+        return False
 
     return any(
         action.lower().startswith(normalized_prefixes) for action in workflow.actions
@@ -1164,10 +1384,20 @@ def merge_workflow_detections(
 
     workflows: list[WorkflowInfo] = []
 
+    seen: set[tuple[str, str | None]] = set()
+
     for detection in detections:
         for workflow in detection.workflows:
-            if workflow not in workflows:
-                workflows.append(workflow)
+            key = (
+                workflow.name,
+                workflow.path,
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            workflows.append(workflow)
 
     return WorkflowDetection(
         detected=bool(workflows),
@@ -1287,6 +1517,8 @@ def build_workflow_security_analysis(
 
     for workflow in workflows:
         findings.extend(workflow.findings)
+
+    findings = deduplicate_findings(findings)
 
     return WorkflowSecurityAnalysis(
         findings=findings,
