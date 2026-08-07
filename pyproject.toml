@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gitrecon"
-version = "0.3.7"
+version = "0.3.7a1"
 description = "GitHub Repository Intelligence & Security Scanner"
 readme = "README.md"
 requires-python = ">=3.11"
