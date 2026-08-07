@@ -23,7 +23,10 @@ GitRecon permet actuellement :
 - La génération de findings de sécurité
 - La détection d'automatisations liées à la sécurité
 - L'export des rapports au format JSON
+- La validation automatisée par CI
 - Une couverture automatisée avec pytest
+- L'analyse statique de sécurité avec Bandit
+- L'audit des dépendances avec pip-audit
 
 ## Analyse du dépôt
 
@@ -55,7 +58,7 @@ GitRecon recherche plusieurs fichiers couramment utilisés pour la sécurité et
 - `CONTRIBUTING.md`
 - La configuration Dependabot
 
-L'objectif est d'obtenir rapidement une vue d'ensemble de la posture de sécurité et de maintenance du dépôt.
+Cela permet d'obtenir rapidement une vue d'ensemble de la posture de sécurité et de maintenance du dépôt.
 
 ## Analyse de GitHub Actions
 
@@ -75,7 +78,7 @@ Pour chaque workflow, GitRecon peut extraire :
 Exemple de référence d'action :
 
 ```text
-actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 ```
 
 GitRecon distingue les actions officielles GitHub des dépendances tierces et vérifie la manière dont les références sont épinglées.
@@ -112,7 +115,7 @@ GitRecon peut identifier des automatisations liées à :
 - Zizmor
 - Dependency Review
 - Des outils de gestion des dépendances
-- Des tests
+- Des tests / CI
 - Des workflows de release
 
 Cela permet d'obtenir rapidement une vue d'ensemble des mécanismes CI/CD et de sécurité déjà présents dans le dépôt.
@@ -146,10 +149,16 @@ source .venv/bin/activate
 source .venv/bin/activate.fish
 ```
 
-Installe GitRecon en mode éditable :
+Installe GitRecon :
 
 ```bash
 pip install -e .
+```
+
+Pour installer également les dépendances de développement :
+
+```bash
+pip install -e ".[dev]"
 ```
 
 Vérifie l'installation :
@@ -194,9 +203,7 @@ gitrecon scan https://github.com/owner/repository.git
 
 ## Export JSON
 
-Depuis GitRecon v0.3.6, les résultats d'analyse peuvent être exportés au format JSON.
-
-Exécute :
+Les résultats d'analyse peuvent être exportés au format JSON :
 
 ```bash
 gitrecon scan owner/repository --json
@@ -208,7 +215,7 @@ GitRecon crée automatiquement le dossier :
 reports/
 ```
 
-et génère un rapport nommé à partir du propriétaire et du dépôt :
+et génère :
 
 ```text
 reports/owner-repository.json
@@ -306,16 +313,67 @@ Pour lancer les tests :
 pytest -q
 ```
 
-GitRecon v0.3.6 contient actuellement :
+Pour lancer Bandit :
+
+```bash
+bandit -r gitrecon
+```
+
+Pour auditer les dépendances :
+
+```bash
+pip-audit
+```
+
+État actuel de validation :
 
 ```text
-76 passed
+85 passed
+Bandit : aucun problème identifié
+pip-audit : aucune vulnérabilité connue
 ```
+
+## Intégration continue
+
+GitRecon possède un workflow GitHub Actions automatisé qui exécute :
+
+- Ruff
+- pytest
+- Bandit
+- pip-audit
+
+Les dépendances GitHub Actions sont épinglées sur des SHA de commit complets afin de réduire les risques liés à la supply chain.
+
+Le workflow CI utilise uniquement des permissions en lecture :
+
+```yaml
+permissions:
+  contents: read
+```
+
+## Security Hardening
+
+GitRecon intègre plusieurs protections destinées à renforcer la robustesse lors de l'analyse de données provenant de dépôts externes :
+
+- Gestion structurée des erreurs GitHub API
+- Gestion fiable des codes HTTP
+- Validation stricte des chemins de workflows
+- Décodage Base64 strict
+- Filtrage des workflows GitHub dynamiques
+- Protection contre les aliases YAML cycliques
+- Limitation de la taille des workflows YAML
+- Validation défensive des réponses GitHub API
+- Découverte contrôlée des packages Python
+- Tests automatisés de régression sécurité
 
 ## Structure du projet
 
 ```text
 GitRecon/
+├── .github/
+│   ├── dependabot.yml
+│   └── workflows/
+│       └── tests.yml
 ├── gitrecon/
 │   ├── analysis/
 │   │   ├── __init__.py
@@ -340,10 +398,12 @@ GitRecon/
 │   └── config.py
 ├── tests/
 │   ├── __init__.py
+│   ├── test_github_security.py
 │   ├── test_json_output.py
 │   └── test_security_analysis.py
-├── .env.example
-├── .gitignore
+├── CODE_OF_CONDUCT.md
+├── CONTRIBUTING.md
+├── SECURITY.md
 ├── LICENSE
 ├── README.md
 ├── README_FR.md
@@ -355,10 +415,43 @@ GitRecon/
 Version stable actuelle :
 
 ```text
-v0.3.6
+v0.3.7a1
 ```
 
-Principales nouveautés de la v0.3.6 :
+### v0.3.7a1 — Correctifs et patches de sécurité
+
+Principales évolutions :
+
+- Correction de l'échec CI lié à une version vulnérable de setuptools
+- Mise à jour de la dépendance de build vers `setuptools>=83.0.0`
+- Ajout de `SECURITY.md`
+- Ajout de `CONTRIBUTING.md`
+- Ajout de `CODE_OF_CONDUCT.md`
+- Ajout de Dependabot
+- Ajout d'une CI automatisée avec Ruff, pytest, Bandit et pip-audit
+- Épinglage des GitHub Actions sur des SHA de commit complets
+- Validation de 85 tests automatisés
+- Validation avec Bandit sans problème identifié
+- Validation avec pip-audit sans vulnérabilité connue
+- Auto-scan GitRecon avec 0 finding de sécurité sur ses propres workflows
+
+### v0.3.7 — Security Hardening
+
+Principales évolutions :
+
+- Gestion structurée des erreurs GitHub API
+- Gestion fiable des codes HTTP
+- Validation stricte des chemins de workflows GitHub Actions
+- Décodage Base64 renforcé
+- Protection contre les aliases YAML cycliques
+- Limitation de la taille des workflows YAML
+- Renforcement de la pagination GitHub
+- Amélioration de la configuration setuptools
+- Ajout de tests de sécurité dédiés
+
+### v0.3.6 — Export JSON
+
+Principales évolutions :
 
 - Export des rapports au format JSON
 - Création automatique du dossier `reports/`
@@ -368,7 +461,6 @@ Principales nouveautés de la v0.3.6 :
 - Sérialisation des permissions
 - Sérialisation des findings de sécurité
 - Tests de validation JSON
-- 76 tests automatisés
 - Renforcement de la robustesse de la CLI
 
 ## Limitations
@@ -398,20 +490,17 @@ Ne publie jamais de token GitHub dans :
 - Les rapports
 - Les logs de debug
 
-Si tu découvres une vulnérabilité affectant GitRecon lui-même, évite de publier immédiatement des détails d'exploitation sensibles avant que le problème puisse être examiné.
+Les vulnérabilités affectant GitRecon doivent être signalées selon les instructions de :
+
+[`SECURITY.md`](SECURITY.md)
 
 ## Contribution
 
 Les contributions sont les bienvenues.
 
-Cela comprend notamment :
+Consulte :
 
-- Les rapports de bugs
-- Les nouvelles règles de sécurité
-- Les améliorations de détection
-- Les améliorations de documentation
-- Les tests
-- Les améliorations de qualité du code
+[`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 Avant de proposer une modification :
 
@@ -420,7 +509,18 @@ ruff check tests gitrecon
 pytest -q
 ```
 
-Toute nouvelle règle de détection de sécurité devrait idéalement être accompagnée de tests automatisés dédiés.
+Pour les changements liés à la sécurité :
+
+```bash
+bandit -r gitrecon
+pip-audit
+```
+
+## Code de conduite
+
+Les contributeurs doivent respecter :
+
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
 
 ## Licence
 

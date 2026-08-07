@@ -23,7 +23,10 @@ GitRecon currently provides:
 - GitHub Actions security findings
 - Security automation detection
 - JSON report export
+- Automated CI validation
 - Automated test coverage with pytest
+- Static security analysis with Bandit
+- Dependency vulnerability auditing with pip-audit
 
 ## Repository Analysis
 
@@ -54,7 +57,7 @@ GitRecon checks for files commonly associated with repository security and proje
 - `CONTRIBUTING.md`
 - Dependabot configuration
 
-The goal is to provide a quick overview of the repository's security and maintenance posture.
+This provides a quick overview of the repository's security and maintenance posture.
 
 ## GitHub Actions Analysis
 
@@ -74,7 +77,7 @@ For each workflow, GitRecon can extract:
 Example action reference:
 
 ```text
-actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 ```
 
 GitRecon distinguishes first-party GitHub Actions from third-party dependencies and checks how action references are pinned.
@@ -111,10 +114,10 @@ GitRecon can identify repository automation related to:
 - Zizmor
 - Dependency Review
 - Dependency tooling
-- Tests
+- Tests / CI
 - Release workflows
 
-This provides a quick overview of the CI/CD and security mechanisms already present in a repository.
+This provides a quick overview of CI/CD and security mechanisms already present in a repository.
 
 ## Installation
 
@@ -145,10 +148,16 @@ source .venv/bin/activate
 source .venv/bin/activate.fish
 ```
 
-Install GitRecon in editable mode:
+Install GitRecon:
 
 ```bash
 pip install -e .
+```
+
+For development dependencies:
+
+```bash
+pip install -e ".[dev]"
 ```
 
 Verify the installation:
@@ -193,21 +202,19 @@ gitrecon scan https://github.com/owner/repository.git
 
 ## JSON Export
 
-Starting with GitRecon v0.3.6, repository analysis can be exported as JSON.
-
-Run:
+Repository analysis can be exported as JSON:
 
 ```bash
 gitrecon scan owner/repository --json
 ```
 
-GitRecon automatically creates the `reports/` directory and generates a report named after the repository owner and repository name:
+GitRecon automatically creates the `reports/` directory and generates:
 
 ```text
 reports/owner-repository.json
 ```
 
-A custom file name can be specified with:
+A custom report name can be specified with:
 
 ```bash
 gitrecon scan owner/repository --json -o audit
@@ -235,7 +242,7 @@ A GitRecon JSON report contains three main sections:
 }
 ```
 
-The security section contains information about:
+The security section contains:
 
 ```text
 security
@@ -279,7 +286,7 @@ This format makes GitRecon reports suitable for:
 }
 ```
 
-Some finding descriptions are currently generated in French because they come directly from GitRecon's internal security rules.
+Some security finding descriptions are currently generated in French because they come directly from GitRecon's internal analysis rules.
 
 ## Development
 
@@ -301,16 +308,67 @@ Run the test suite:
 pytest -q
 ```
 
-GitRecon v0.3.6 currently includes:
+Run Bandit:
+
+```bash
+bandit -r gitrecon
+```
+
+Audit dependencies:
+
+```bash
+pip-audit
+```
+
+Current validation status:
 
 ```text
-76 passed
+85 passed
+Bandit: no issues identified
+pip-audit: no known vulnerabilities found
 ```
+
+## Continuous Integration
+
+GitRecon includes an automated GitHub Actions workflow that runs:
+
+- Ruff
+- pytest
+- Bandit
+- pip-audit
+
+GitHub Actions dependencies are pinned to full commit SHAs to reduce supply-chain risk.
+
+The CI workflow uses read-only repository permissions:
+
+```yaml
+permissions:
+  contents: read
+```
+
+## Security Hardening
+
+GitRecon includes several protections intended to improve robustness when analyzing untrusted repository data:
+
+- Structured GitHub API errors
+- Reliable HTTP status handling
+- Strict workflow path validation
+- Strict Base64 decoding
+- Filtering of dynamic GitHub workflows
+- Protection against cyclic YAML aliases
+- Workflow YAML size limits
+- Defensive validation of GitHub API responses
+- Restricted package discovery
+- Automated security regression tests
 
 ## Project Structure
 
 ```text
 GitRecon/
+├── .github/
+│   ├── dependabot.yml
+│   └── workflows/
+│       └── tests.yml
 ├── gitrecon/
 │   ├── analysis/
 │   │   ├── __init__.py
@@ -335,10 +393,12 @@ GitRecon/
 │   └── config.py
 ├── tests/
 │   ├── __init__.py
+│   ├── test_github_security.py
 │   ├── test_json_output.py
 │   └── test_security_analysis.py
-├── .env.example
-├── .gitignore
+├── CODE_OF_CONDUCT.md
+├── CONTRIBUTING.md
+├── SECURITY.md
 ├── LICENSE
 ├── README.md
 ├── README_FR.md
@@ -350,20 +410,52 @@ GitRecon/
 Current stable version:
 
 ```text
-v0.3.6
+v0.3.7a1
 ```
 
-Main additions in v0.3.6:
+### v0.3.7a1 — Bug Fixes & Security Patches
+
+Main changes:
+
+- Fixed CI failure caused by a vulnerable setuptools version
+- Updated the build requirement to `setuptools>=83.0.0`
+- Added `SECURITY.md`
+- Added `CONTRIBUTING.md`
+- Added `CODE_OF_CONDUCT.md`
+- Added Dependabot configuration
+- Added automated CI with Ruff, pytest, Bandit and pip-audit
+- Pinned GitHub Actions to full commit SHAs
+- Confirmed 85 automated tests passing
+- Confirmed Bandit reports no security issues
+- Confirmed pip-audit reports no known vulnerabilities
+- Confirmed GitRecon self-scan reports 0 workflow security findings
+
+### v0.3.7 — Security Hardening
+
+Main changes:
+
+- Structured GitHub API error handling
+- Reliable HTTP status code handling
+- Strict GitHub Actions workflow path validation
+- Strict Base64 decoding
+- Protection against cyclic YAML aliases
+- Workflow YAML size limits
+- Pagination hardening
+- setuptools packaging configuration improvements
+- Dedicated GitHub security tests
+
+### v0.3.6 — JSON Export
+
+Main changes:
 
 - JSON report export
 - Automatic `reports/` directory creation
-- Default report file names
+- Automatic report file naming
 - Custom report names with `--output`
 - Workflow serialization
 - Permission serialization
 - Security finding serialization
 - JSON validation tests
-- 76 automated tests
 - CLI robustness improvements
 
 ## Limitations
@@ -393,20 +485,17 @@ Never expose GitHub access tokens in:
 - Reports
 - Debug logs
 
-If you discover a security issue affecting GitRecon itself, avoid publicly disclosing sensitive exploitation details before the issue can be reviewed.
+Security vulnerabilities affecting GitRecon should be reported according to:
+
+[`SECURITY.md`](SECURITY.md)
 
 ## Contributing
 
 Contributions are welcome.
 
-This includes:
+See:
 
-- Bug reports
-- New security rules
-- Detection improvements
-- Documentation improvements
-- Tests
-- Code quality improvements
+[`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 Before submitting changes, run:
 
@@ -415,7 +504,18 @@ ruff check tests gitrecon
 pytest -q
 ```
 
-New security detection rules should ideally include dedicated automated tests.
+For security-sensitive changes:
+
+```bash
+bandit -r gitrecon
+pip-audit
+```
+
+## Code of Conduct
+
+Contributors are expected to follow:
+
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
 
 ## License
 
